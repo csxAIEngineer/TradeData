@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from pathlib import Path
 
 import clickhouse_connect
 import psycopg
@@ -58,27 +59,42 @@ def apply_clickhouse(settings: Settings) -> None:
     # HTTP 连接不保留 USE，建表语句写全限定名，后续查询走目标库。
     client = _clickhouse(settings, database=database)
     try:
-        path = repo_root() / "sql" / "clickhouse" / "001_market.sql"
-        statements = read_sql(path)
-        for statement in statements:
-            qualified = statement.replace("market.", f"{database}.")
-            try:
-                client.command(qualified)
-            except Exception:
-                log.error("ClickHouse 语句失败: %s", qualified[:240])
-                raise
-        found = client.query(
-            "SELECT count() FROM schema_migrations WHERE version = {version:String}",
-            parameters={"version": "001_market"},
-        ).result_rows[0][0]
-        if not found:
-            client.command(
-                "INSERT INTO schema_migrations (version) VALUES ({version:String})",
-                parameters={"version": "001_market"},
-            )
+        paths = clickhouse_sql_files()
+        if not paths:
+            raise FileNotFoundError("sql/clickhouse 下没有迁移文件")
+        for path in paths:
+            _apply_clickhouse_file(client, path, database)
     finally:
         client.close()
     log.info("ClickHouse 行情库已应用")
+
+
+def clickhouse_sql_files() -> list[Path]:
+    """按文件名顺序返回 ClickHouse 迁移。001 仍是 CREATE IF NOT EXISTS。"""
+    sql_dir = repo_root() / "sql" / "clickhouse"
+    return sorted(path for path in sql_dir.glob("*.sql") if path.is_file())
+
+
+def _apply_clickhouse_file(client, path: Path, database: str) -> None:
+    version = path.stem
+    statements = read_sql(path)
+    for statement in statements:
+        qualified = statement.replace("market.", f"{database}.")
+        try:
+            client.command(qualified)
+        except Exception:
+            log.error("ClickHouse 语句失败 (%s): %s", version, qualified[:240])
+            raise
+    found = client.query(
+        "SELECT count() FROM schema_migrations WHERE version = {version:String}",
+        parameters={"version": version},
+    ).result_rows[0][0]
+    if not found:
+        client.command(
+            "INSERT INTO schema_migrations (version) VALUES ({version:String})",
+            parameters={"version": version},
+        )
+    log.info("ClickHouse 迁移已应用: %s", version)
 
 
 def wait_postgres(settings: Settings, timeout_s: float = 60) -> None:
