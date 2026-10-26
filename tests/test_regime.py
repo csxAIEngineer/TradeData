@@ -11,13 +11,16 @@ from dataprice.strategy.regime import (
     atr_percentile,
     efficiency_asof,
     efficiency_ratio,
+    long_sweep_allows,
     regime_allows,
+    sweep_rejection_clv,
     trend_side_allows,
 )
 from dataprice.strategy.signals import (
     StrategyParams,
     entry_signals,
     evaluated_params,
+    long_params,
     regime_params,
     trend_regime_params,
 )
@@ -271,6 +274,136 @@ def test_entry_can_skip_the_session_or_a_flat_4h_path():
         )
         == 1
     )
+
+
+def test_sweep_clv_measures_where_the_close_sits_in_the_bar():
+    high_close = Candle(T0, 100, 101, 97, 100.5)
+    weak_close = Candle(T0, 100, 101, 97, 98.2)
+    assert sweep_rejection_clv(high_close) == pytest.approx(0.875)
+    assert sweep_rejection_clv(weak_close) == pytest.approx(0.3)
+    assert sweep_rejection_clv(Candle(T0, 100, 100, 100, 100)) is None
+    assert long_sweep_allows(high_close, min_clv=0.7) is True
+    assert long_sweep_allows(weak_close, min_clv=0.7) is False
+    assert long_sweep_allows(weak_close) is True
+    assert long_sweep_allows(Candle(T0, 100, 100, 100, 100), min_clv=0.7) is False
+
+
+def test_long_clv_blocks_a_weak_sweep_and_leaves_the_short_alone():
+    candles = _candles(_long_rows())
+    bull = tuple("bull" for _ in candles)
+    sell_side = Level("eql", "sell", 98.0, 0)
+    buy_side = Level("eqh", "buy", 112.0, 0)
+    sweep = Sweep(5, "sell", sell_side, 97.0)
+    zones = find_zones(candles)
+    liquidity = LiquidityMap((sell_side, buy_side), (sweep,))
+    kept = entry_signals(
+        candles,
+        bias_30=bull,
+        bias_1h=bull,
+        liquidity=liquidity,
+        zones=zones,
+        params=StrategyParams(long_min_sweep_clv=0.7),
+    )
+    assert len(kept) == 1
+    assert kept[0].side == "buy"
+    weak = _candles(_long_rows())
+    weak[5] = Candle(weak[5].open_ts, 100, 101, 97, 98.2)
+    weak_zones = find_zones(weak)
+    assert (
+        len(
+            entry_signals(
+                weak,
+                bias_30=bull,
+                bias_1h=bull,
+                liquidity=liquidity,
+                zones=weak_zones,
+            )
+        )
+        == 1
+    )
+    assert (
+        entry_signals(
+            weak,
+            bias_30=bull,
+            bias_1h=bull,
+            liquidity=liquidity,
+            zones=weak_zones,
+            params=StrategyParams(long_min_sweep_clv=0.7),
+        )
+        == []
+    )
+    short_candles = _candles(_short_rows())
+    bear = tuple("bear" for _ in short_candles)
+    short_buy = Level("eqh", "buy", 102.0, 0)
+    short_sell = Level("eql", "sell", 88.0, 0)
+    sold = entry_signals(
+        short_candles,
+        bias_30=bear,
+        bias_1h=bear,
+        liquidity=LiquidityMap((short_buy, short_sell), (Sweep(5, "buy", short_buy, 103.0),)),
+        zones=find_zones(short_candles),
+        params=StrategyParams(long_min_sweep_clv=0.99),
+    )
+    assert len(sold) == 1
+    assert sold[0].side == "sell"
+
+
+def test_long_profile_is_candidate_p_buys_with_the_train_locked_clv():
+    params = long_params()
+    base = evaluated_params()
+    assert params.sides == ("buy",)
+    assert params.long_min_sweep_clv == 0.7
+    assert params.confirm_4h is True
+    assert params.max_risk_bps == 80
+    assert params.liquidity_kinds == ("eqh", "eql")
+    assert params.entry == "zone"
+    assert params.exit_on_bias_flip is False
+    assert params.min_er is None
+    assert base.long_min_sweep_clv is None
+    assert base.sides == ("buy", "sell")
+    assert regime_params().long_min_sweep_clv is None
+    with pytest.raises(ValueError, match="long_min_sweep_clv"):
+        StrategyParams(long_min_sweep_clv=0)
+    with pytest.raises(ValueError, match="long_min_sweep_clv"):
+        StrategyParams(long_min_sweep_clv=1.1)
+
+
+def test_report_splits_train_and_holdout_on_entry_time():
+    from decimal import Decimal
+
+    from dataprice.strategy.backtest import BacktestResult, Trade, format_report
+
+    split = datetime(2026, 3, 1, tzinfo=UTC)
+
+    def trade(ts: datetime, pnl: str) -> Trade:
+        return Trade(
+            side="buy",
+            entry_index=1,
+            exit_index=2,
+            entry_ts=ts,
+            exit_ts=ts,
+            entry=Decimal("100"),
+            exit=Decimal("101"),
+            stop=99.0,
+            target=110.0,
+            reason="target",
+            pnl=Decimal(pnl),
+            zone_kind="fvg",
+        )
+
+    result = BacktestResult(
+        trades=(
+            trade(datetime(2026, 2, 1, tzinfo=UTC), "2"),
+            trade(datetime(2026, 3, 2, tzinfo=UTC), "-1"),
+        ),
+        signals=2,
+        starting_buying_power=Decimal("10"),
+        ending_buying_power=Decimal("11"),
+    )
+    text = format_report(result, split=split)
+    assert "训练 平仓 1" in text
+    assert "留出 平仓 1" in text
+    assert "平仓 2" in format_report(result)
 
 
 def _candles(rows, start=T0, minutes=30):

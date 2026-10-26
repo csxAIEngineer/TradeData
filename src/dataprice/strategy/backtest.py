@@ -185,16 +185,40 @@ def simulate(
     )
 
 
-def format_report(result: BacktestResult) -> str:
+def format_report(result: BacktestResult, *, split: datetime | None = None) -> str:
     stats = performance(result)
     lines = [
         f"信号 {result.signals}，平仓 {stats.trades}，胜率 {stats.win_rate:.1%}，盈亏比 {stats.profit_factor:.2f}",
         f"已实现盈亏 {result.realized_pnl}，最大回撤 {stats.max_drawdown}，平均持有 {stats.avg_hold_bars:.1f} 根",
         f"购买力 {result.starting_buying_power} → {result.ending_buying_power}",
     ]
+    if split is not None:
+        lines.append(_window_line("训练", result, lambda trade: trade.entry_ts < split))
+        lines.append(_window_line("留出", result, lambda trade: trade.entry_ts >= split))
     if result.open_side is not None:
         lines.append(f"未平仓 {result.open_side} @ {result.open_entry}")
     return "\n".join(lines)
+
+
+def _window_line(label: str, result: BacktestResult, predicate) -> str:
+    trades = tuple(trade for trade in result.trades if predicate(trade))
+    stats = performance(
+        BacktestResult(
+            trades=trades,
+            signals=result.signals,
+            starting_buying_power=result.starting_buying_power,
+            ending_buying_power=result.ending_buying_power,
+        )
+    )
+    buys = [trade for trade in trades if trade.side == "buy"]
+    sells = [trade for trade in trades if trade.side == "sell"]
+    buy_pnl = q_cash(sum((trade.pnl for trade in buys), Decimal("0")))
+    sell_pnl = q_cash(sum((trade.pnl for trade in sells), Decimal("0")))
+    return (
+        f"{label} 平仓 {stats.trades}，盈亏 {stats.pnl}，胜率 {stats.win_rate:.1%}，"
+        f"盈亏比 {stats.profit_factor:.2f}，平均R {stats.avg_r:+.2f}，回撤 {stats.max_drawdown}，"
+        f"多 {len(buys)}/{buy_pnl}，空 {len(sells)}/{sell_pnl}"
+    )
 
 
 @dataclass(frozen=True)

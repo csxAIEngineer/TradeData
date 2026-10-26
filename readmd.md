@@ -45,6 +45,8 @@ uv run dataprice backtest --symbol BTC-USDT --months 24
 
 `uv run dataprice backtest --grid` 只在同一条 4 小时效率比低于 0.25 时做震荡网格，等于或高于 0.25 就空仓。网格用等高/等低当区间，没有成对水位就用最近上下沿。它有仓位上限、固定间距、收盘破位止损和库存浮亏停机，不改 `evaluated_params()`。费用仍是每边 5 个基点手续费和 2 个基点不利滑点。说明在 `doc/grid_chop.md`。
 
+`uv run dataprice backtest --buy-only` 是评估候选只做多。`uv run dataprice backtest --long` 在这上面要求扫卖侧那根的收盘落在高低区间的 70% 以上。这道门槛只在训练窗口里锁定。留出样本的多头打平，不是已经证实的优势。说明写在 `doc/ict_smc_long.md`。
+
 代码按层分开：
 
 dataprice.hotpath：内存里的持仓、额度和出站队列。evaluate / apply_fill 没有数据库调用。
