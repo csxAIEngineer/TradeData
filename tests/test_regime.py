@@ -653,3 +653,32 @@ def test_short_params_reject_a_bad_efficiency_floor():
     assert evaluated_params().short_daily_bias is False
     assert evaluated_params().short_min_er is None
     assert regime_params().short_net_down is False
+
+
+def _candles(rows, start=T0, minutes=30):
+    return [
+        Candle(start + timedelta(minutes=minutes * index), open_, high, low, close, 1.0)
+        for index, (open_, high, low, close) in enumerate(rows)
+    ]
+
+
+def _short_rows():
+    """做多夹具的价格反射。扫买侧流动性，再回到看空失衡。"""
+    return [(200 - open_, 200 - low, 200 - high, 200 - close) for open_, high, low, close in _long_rows()]
+
+
+def _long_rows():
+    return [
+        (100, 101, 99, 100),
+        (100, 101, 99, 100),
+        (100, 101, 99, 100),
+        (100, 101, 99, 100),
+        (100, 101, 99, 100),
+        (100, 101, 97, 100.5),
+        (100.5, 102, 100.2, 101.5),
+        (101.5, 105, 101.4, 104.5),
+        (104.5, 106, 103.2, 105.5),
+        (105.5, 106, 105, 105.2),
+        (105.2, 105.4, 103.0, 104.0),
+        (104, 113, 103.5, 111),
+    ]
