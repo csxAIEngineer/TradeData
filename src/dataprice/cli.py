@@ -50,6 +50,16 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="猴市不做；4 小时偏多只做多，偏空只做空，中性不做",
     )
+    backtest.add_argument(
+        "--long",
+        action="store_true",
+        help="只做多，并要求扫卖侧那根的收盘落在高低区间的 70% 以上",
+    )
+    backtest.add_argument(
+        "--buy-only",
+        action="store_true",
+        help="同一套规则只保留多头。可以和其它画像一起用，--long 本身已经只做多",
+    )
     args = parser.parse_args(argv)
     if args.command == "bootstrap":
         from dataprice.bootstrap import bootstrap
@@ -94,6 +104,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         logging.info("主动成交回补完成: %s", written)
     elif args.command == "backtest":
+        from dataclasses import replace
         from datetime import datetime, timedelta
 
         from dataprice.strategy.backtest import format_report, run_stored_backtest
@@ -101,14 +112,19 @@ def main(argv: list[str] | None = None) -> None:
             StrategyParams,
             evaluated_params,
             flow_params,
+            long_params,
             regime_params,
             trend_regime_params,
         )
         from dataprice.timeutil import UTC
 
-        chosen = [name for name in ("baseline", "flow", "regime", "trend_regime") if getattr(args, name)]
+        chosen = [
+            name
+            for name in ("baseline", "flow", "regime", "trend_regime", "long")
+            if getattr(args, name)
+        ]
         if len(chosen) > 1:
-            parser.error("--baseline、--flow、--regime、--trend-regime 只能选一个")
+            parser.error("--baseline、--flow、--regime、--trend-regime、--long 只能选一个")
         end = datetime.now(UTC)
         start = end - timedelta(days=args.months * 30)
         if args.baseline:
@@ -119,8 +135,12 @@ def main(argv: list[str] | None = None) -> None:
             params = regime_params()
         elif args.trend_regime:
             params = trend_regime_params()
+        elif args.long:
+            params = long_params()
         else:
             params = evaluated_params()
+        if args.buy_only:
+            params = replace(params, sides=("buy",))
         try:
             result, bars_30, bars_60 = run_stored_backtest(
                 symbol=args.symbol,
@@ -133,7 +153,8 @@ def main(argv: list[str] | None = None) -> None:
         except RuntimeError as exc:
             parser.error(str(exc))
         logging.info("%s 30m %s 根，60m %s 根", args.symbol, bars_30, bars_60)
-        for line in format_report(result).splitlines():
+        split = datetime(2026, 3, 1, tzinfo=UTC)
+        for line in format_report(result, split=split).splitlines():
             logging.info("%s", line)
     else:
         parser.error(args.command)

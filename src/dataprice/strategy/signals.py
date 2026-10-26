@@ -21,6 +21,8 @@
 ``skip_sessions``、``min_er``、``min_atr_pct`` / ``max_atr_pct`` 是进场这根的
 行情过滤：时段、已经收盘的 4 小时效率比、30 分钟 ATR 在更早样本里的分位。
 样本不够就放过这次进场。
+``long_min_sweep_clv`` 只约束做多：扫卖侧那根的收盘要落在整根高低区间的上沿，
+刺破后买盘把价格收回来。收在低点附近的扫流动性不做。这个条件不改变做空。
 ``exit_on_bias_flip`` 为假时，1 小时偏向翻转不作为出场，只留止损和止盈。
 ``breakeven_at_r`` 在价格先走出这么多 R 之后，下一根把止损抬到进场价。
 
@@ -44,6 +46,7 @@ from dataprice.strategy.regime import (
     SESSIONS,
     atr_percentile,
     efficiency_asof,
+    long_sweep_allows,
     regime_allows,
     trend_side_allows,
 )
@@ -92,6 +95,7 @@ class StrategyParams:
     atr_length: int = 14
     atr_lookback: int = 960
     trend_side: bool = False
+    long_min_sweep_clv: float | None = None
 
     def __post_init__(self) -> None:
         if self.wing < 1:
@@ -139,6 +143,8 @@ class StrategyParams:
             raise ValueError("min_atr_pct 不能大于 max_atr_pct")
         if self.atr_length < 2 or self.atr_lookback < 2:
             raise ValueError("ATR 窗口必须 >= 2")
+        if self.long_min_sweep_clv is not None and not 0 < self.long_min_sweep_clv <= 1:
+            raise ValueError("long_min_sweep_clv 必须在 0 和 1 之间")
 
 
 @dataclass(frozen=True)
@@ -203,6 +209,17 @@ def trend_regime_params() -> StrategyParams:
     所以在这条候选上，方向条件和 ``regime_params`` 是同一套成交。
     """
     return replace(regime_params(), trend_side=True)
+
+
+def long_params() -> StrategyParams:
+    """评估候选的多头，再加上训练窗口锁定的扫流动性收回。
+
+    扫卖侧那根的收盘要落在整根高低区间的 70% 以上。只做多，不发出空头。
+    选择只用 2026-03-01 之前的进场：至少 20 笔，训练盈亏不低于候选 P
+    多头账面 10 美元，盈亏比不低于 P，然后取盈亏比最高的一档。
+    留出样本没有参与这个选择。见 ``doc/ict_smc_long.md``。
+    """
+    return replace(evaluated_params(), sides=("buy",), long_min_sweep_clv=0.7)
 
 
 def flow_params(min_imbalance: float = 0.0) -> StrategyParams:
@@ -403,6 +420,11 @@ def _from_sweep(
     ):
         return None
     if sweep.level.kind not in params.liquidity_kinds:
+        return None
+    if trade_bias == "bull" and not long_sweep_allows(
+        candles[sweep.index],
+        min_clv=params.long_min_sweep_clv,
+    ):
         return None
     candidates = [
         zone

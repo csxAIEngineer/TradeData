@@ -107,6 +107,25 @@ def atr_percentile(
     return tuple(out)
 
 
+def sweep_rejection_clv(candle: Candle) -> float | None:
+    """收盘在整根高低区间里的位置。1 是收在最高，0 是收在最低。"""
+    span = candle.high - candle.low
+    if span <= 0:
+        return None
+    return (candle.close - candle.low) / span
+
+
+def long_sweep_allows(candle: Candle, *, min_clv: float | None = None) -> bool:
+    """做多扫卖侧流动性：收盘要在这根 K 线高低区间的上沿。
+
+    条件没开就通过。高低一样、CLV 算不出来，则不通过。
+    """
+    if min_clv is None:
+        return True
+    clv = sweep_rejection_clv(candle)
+    return clv is not None and clv >= min_clv
+
+
 def trend_side_allows(trade_bias: str, bias_4h: str | None) -> bool:
     """不是猴市时，只顺着已经收盘的 4 小时结构做。
 

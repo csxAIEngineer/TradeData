@@ -144,3 +144,5 @@ make test
 Real aggressor volume (not an OHLC proxy) is a separate comparison in `doc/ict_smc_flow.md`. `make flow-backfill` loads it, and `uv run dataprice backtest --flow` runs the filter.
 
 A train-locked 4h efficiency gate on this same candidate is in `doc/ict_smc_regime.md`. `uv run dataprice backtest --regime` runs it. The holdout is still a loss.
+
+A train-locked long-only sweep rejection is in `doc/ict_smc_long.md`. `uv run dataprice backtest --long` runs it. The long holdout is flat, not a profit.

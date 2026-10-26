@@ -43,6 +43,8 @@ uv run dataprice backtest --symbol BTC-USDT --months 24
 
 `uv run dataprice backtest --regime` 在评估候选上再要求大约三天的 4 小时效率比至少 0.25。`uv run dataprice backtest --trend-regime` 再加上「4 小时偏多只做多、偏空只做空、中性不做」。评估候选本来就要求 4 小时偏向和方向一致，所以这两条在这条候选上是同一套成交。留出样本的多空都还在亏。说明写在 `doc/ict_smc_regime.md`。
 
+`uv run dataprice backtest --buy-only` 是评估候选只做多。`uv run dataprice backtest --long` 在这上面要求扫卖侧那根的收盘落在高低区间的 70% 以上。这道门槛只在训练窗口里锁定。留出样本的多头打平，不是已经证实的优势。说明写在 `doc/ict_smc_long.md`。
+
 代码按层分开：
 
 dataprice.hotpath：内存里的持仓、额度和出站队列。evaluate / apply_fill 没有数据库调用。
