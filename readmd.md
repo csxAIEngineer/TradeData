@@ -21,6 +21,7 @@ make bootstrap   # 建表，并创建 ArcticDB library
 make health
 make smoke       # 三个存储各做一轮读写
 make backfill    # 从 OKX 拉 BTC-USDT 的 30m 和 60m（1 小时）写入 market.bars
+make flow-backfill  # 从 Binance USD-M 拉 30m 主动买卖量写入 market.taker_flow
 make backtest    # 用已入库 K 线跑 ICT + SMC 回测
 make test        # 不连数据库的单元测试
 make down        # 停止容器，数据卷保留
@@ -37,6 +38,8 @@ uv run dataprice backtest --symbol BTC-USDT --months 24
 `dataprice.strategy` 做 ICT + SMC：1 小时用 BOS/CHoCH 定偏向，30 分钟只做同向结构里、扫完逆向流动性之后回到 FVG 或订单块的单。`generate_signals` 不连数据库。这条回测不出图。
 
 `make backtest` 跑的是评估候选（4 小时同向、只做等高/等低、止损不超过 80 个基点、限价进在失衡近端），默认每边 5 个基点手续费和 2 个基点滑点。最初的宽松规则用 `uv run dataprice backtest --baseline --fee-bps 0 --slippage-bps 0`。结论写在 `doc/ict_smc_evaluation.md`：全样本在这套费用下略赚，2026-03 之后的留出样本不赚。
+
+主动成交过滤要先 `make flow-backfill`，再 `uv run dataprice backtest --flow`。OKX 公开接口没有这条回测窗口的历史盘口和爆仓明细，入库的是 Binance USD-M 30 分钟主动买卖量。对照写在 `doc/ict_smc_flow.md`。
 
 代码按层分开：
 

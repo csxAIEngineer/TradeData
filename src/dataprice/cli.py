@@ -23,12 +23,23 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help="30m 或 60m（1h 会写成 60m）。可重复，默认两个都拉",
     )
+    flow = sub.add_parser(
+        "flow-backfill",
+        help="从 Binance USD-M 拉 30m 主动买卖量写入 ClickHouse market.taker_flow",
+    )
+    flow.add_argument("--symbol", default="BTC-USDT")
+    flow.add_argument("--months", type=int, default=24, help="大约 30 天算一个月，默认 24")
     backtest = sub.add_parser("backtest", help="用 market.bars 的 30m/60m 跑 ICT+SMC 回测")
     backtest.add_argument("--symbol", default="BTC-USDT")
     backtest.add_argument("--months", type=int, default=24, help="回测窗口，大约 30 天算一个月")
     backtest.add_argument("--fee-bps", type=float, default=5.0, help="每边手续费，基点。默认 5")
     backtest.add_argument("--slippage-bps", type=float, default=2.0, help="每边不利滑点，基点。默认 2")
     backtest.add_argument("--baseline", action="store_true", help="用最初的宽松规则，而不是评估候选")
+    backtest.add_argument(
+        "--flow",
+        action="store_true",
+        help="在评估候选上再要求扫流动性那根的主动成交同向",
+    )
     args = parser.parse_args(argv)
     if args.command == "bootstrap":
         from dataprice.bootstrap import bootstrap
@@ -60,16 +71,35 @@ def main(argv: list[str] | None = None) -> None:
             now=datetime.now(UTC),
         )
         logging.info("回补完成: %s", written)
+    elif args.command == "flow-backfill":
+        from datetime import datetime
+
+        from dataprice.feed.flow_history import backfill_taker_flow
+        from dataprice.timeutil import UTC
+
+        written = backfill_taker_flow(
+            symbol=args.symbol,
+            months=args.months,
+            now=datetime.now(UTC),
+        )
+        logging.info("主动成交回补完成: %s", written)
     elif args.command == "backtest":
         from datetime import datetime, timedelta
 
         from dataprice.strategy.backtest import format_report, run_stored_backtest
-        from dataprice.strategy.signals import StrategyParams, evaluated_params
+        from dataprice.strategy.signals import StrategyParams, evaluated_params, flow_params
         from dataprice.timeutil import UTC
 
+        if args.baseline and args.flow:
+            parser.error("--baseline 和 --flow 不能一起用")
         end = datetime.now(UTC)
         start = end - timedelta(days=args.months * 30)
-        params = StrategyParams() if args.baseline else evaluated_params()
+        if args.baseline:
+            params = StrategyParams()
+        elif args.flow:
+            params = flow_params()
+        else:
+            params = evaluated_params()
         try:
             result, bars_30, bars_60 = run_stored_backtest(
                 symbol=args.symbol,

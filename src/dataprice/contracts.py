@@ -100,6 +100,21 @@ class BookQuote:
 
 
 @dataclass(frozen=True)
+class TakerFlow:
+    """一根 K 线上的主动买、主动卖成交量。``exchange_ts`` 是开盘时间。"""
+
+    symbol: str
+    source: str
+    freq: str
+    exchange_ts: datetime
+    local_recv_ts: datetime
+    buy_volume: float
+    sell_volume: float
+    volume: float
+    trade_count: int
+
+
+@dataclass(frozen=True)
 class OrderEvent:
     """策略线程写入出站队列的订单。ingest_ts 由落库时再打。"""
 

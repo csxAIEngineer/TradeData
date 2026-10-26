@@ -31,7 +31,12 @@ def test_clickhouse_migrations_run_in_filename_order():
     from dataprice.bootstrap import clickhouse_sql_files
 
     names = [path.name for path in clickhouse_sql_files()]
-    assert names == ["001_market.sql", "002_quotes.sql"]
+    assert names == ["001_market.sql", "002_quotes.sql", "003_taker_flow.sql"]
+    flow = "\n".join(read_sql(repo_root() / "sql" / "clickhouse" / "003_taker_flow.sql"))
+    assert "CREATE TABLE IF NOT EXISTS market.taker_flow" in flow
+    assert "buy_volume      Float64" in flow
+    assert "sell_volume     Float64" in flow
+    assert "ORDER BY (symbol, source, freq, exchange_ts)" in flow
     quotes = "\n".join(read_sql(repo_root() / "sql" / "clickhouse" / "002_quotes.sql"))
     assert "CREATE TABLE IF NOT EXISTS market.quotes" in quotes
     assert "ReplacingMergeTree(ingest_ts)" in quotes

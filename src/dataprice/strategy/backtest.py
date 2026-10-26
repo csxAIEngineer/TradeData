@@ -21,6 +21,7 @@ from dataprice.config import Settings
 from dataprice.contracts import Side, q_cash, q_px, q_qty
 from dataprice.hotpath.state import OrderIntent, TradingState
 from dataprice.strategy.candles import Candle
+from dataprice.strategy.flow import TakerBar
 from dataprice.strategy.signals import Signal, SignalBook, StrategyParams, generate_signals
 
 ExitReason = Literal["stop", "target", "bias_flip", "end"]
@@ -89,9 +90,10 @@ def run_backtest(
     buying_power: Decimal = Decimal("1000000"),
     max_order_notional: Decimal = Decimal("1000000"),
     max_position_qty: Decimal = Decimal("10"),
+    flow: Sequence[TakerBar] | None = None,
 ) -> BacktestResult:
     params = params or StrategyParams()
-    book = generate_signals(candles_30, candles_60, params)
+    book = generate_signals(candles_30, candles_60, params, flow=flow)
     return simulate(
         candles_30,
         book,
@@ -423,13 +425,28 @@ def run_stored_backtest(
     slippage_bps: float = 0.0,
     settings: Settings | None = None,
 ) -> tuple[BacktestResult, int, int]:
-    """从 ClickHouse ``market.bars`` 读 30m / 60m，再跑回测。"""
+    """从 ClickHouse ``market.bars`` 读 30m / 60m，再跑回测。
+
+    ``params.min_flow_imbalance`` 不为空时，再读 ``market.taker_flow``。
+    """
+    from dataprice.feed.binance_flow import BINANCE_UM_SOURCE
     from dataprice.market.repo import market_session
     from dataprice.strategy.candles import candles_from_frame
+    from dataprice.strategy.flow import taker_bars_from_rows
 
+    params = params or StrategyParams()
     with market_session(settings) as repo:
         frame_30 = repo.query_bars([symbol], "30m", start, end)
         frame_60 = repo.query_bars([symbol], "60m", start, end)
+        flow_frame = None
+        if params.min_flow_imbalance is not None:
+            flow_frame = repo.query_taker_flow(
+                [symbol],
+                "30m",
+                start,
+                end,
+                source=BINANCE_UM_SOURCE,
+            )
     candles_30 = candles_from_frame(frame_30)
     candles_60 = candles_from_frame(frame_60)
     if not candles_30 or not candles_60:
@@ -437,6 +454,14 @@ def run_stored_backtest(
             "ClickHouse 里没有足够的 K 线。先执行: "
             f"uv run dataprice backfill --symbol {symbol}"
         )
+    flow = None
+    if flow_frame is not None:
+        flow = taker_bars_from_rows(flow_frame.itertuples(index=False))
+        if not flow:
+            raise RuntimeError(
+                "ClickHouse 里没有主动成交。先执行: "
+                f"uv run dataprice flow-backfill --symbol {symbol}"
+            )
     result = run_backtest(
         candles_30,
         candles_60,
@@ -445,6 +470,7 @@ def run_stored_backtest(
         qty=qty,
         fee_bps=fee_bps,
         slippage_bps=slippage_bps,
+        flow=flow,
     )
     return result, len(candles_30), len(candles_60)
 

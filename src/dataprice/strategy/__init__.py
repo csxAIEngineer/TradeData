@@ -6,6 +6,7 @@ from dataprice.strategy.signals import (
     SignalBook,
     StrategyParams,
     evaluated_params,
+    flow_params,
     generate_signals,
 )
 
@@ -15,6 +16,7 @@ __all__ = [
     "SignalBook",
     "StrategyParams",
     "evaluated_params",
+    "flow_params",
     "format_report",
     "generate_signals",
     "run_backtest",

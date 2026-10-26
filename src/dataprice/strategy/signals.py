@@ -16,6 +16,8 @@
 
 可选过滤（默认不收紧，回测评估时再打开）：只做某些失衡和流动性、
 限制止损宽度和追价、要求缺口够大、用 4 小时结构确认 1 小时偏向。
+``min_flow_imbalance`` 打开后，扫流动性那根还必须有同向的主动成交：
+扫卖侧要主动卖出占优，扫买侧要主动买入占优。没有这根的成交拆分就不做。
 ``exit_on_bias_flip`` 为假时，1 小时偏向翻转不作为出场，只留止损和止盈。
 ``breakeven_at_r`` 在价格先走出这么多 R 之后，下一根把止损抬到进场价。
 
@@ -25,15 +27,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Literal, Sequence
+from typing import Literal, Mapping, Sequence
 
 import pandas as pd
 
 from dataprice.contracts import Side
 from dataprice.factors.frame import validate_panel
 from dataprice.strategy.candles import Candle, aggregate_candles, assert_sorted, bar_delta
+from dataprice.strategy.flow import TakerBar, aggressor_confirms, index_flow, open_ms
 from dataprice.strategy.imbalance import Zone, find_zones
 from dataprice.strategy.liquidity import Level, LiquidityMap, Sweep, map_liquidity
 from dataprice.strategy.structure import structure_path
@@ -70,6 +73,7 @@ class StrategyParams:
     entry: Literal["close", "zone"] = "close"
     max_structure_age: int | None = None
     structure_kinds: tuple[str, ...] = ("bos", "choch")
+    min_flow_imbalance: float | None = None
 
     def __post_init__(self) -> None:
         if self.wing < 1:
@@ -98,6 +102,8 @@ class StrategyParams:
             raise ValueError("max_structure_age 不能为负")
         if not self.structure_kinds:
             raise ValueError("structure_kinds 不能是空的")
+        if self.min_flow_imbalance is not None and not 0 <= self.min_flow_imbalance <= 1:
+            raise ValueError("min_flow_imbalance 必须在 0 和 1 之间")
 
 
 @dataclass(frozen=True)
@@ -143,10 +149,22 @@ def evaluated_params() -> StrategyParams:
     )
 
 
+def flow_params(min_imbalance: float = 0.0) -> StrategyParams:
+    """在评估候选上再要求扫流动性那根的主动成交同向。
+
+    默认 0：被扫的一侧主动量至少占一半。0.10 和 0.20 在训练窗口里
+    交易笔数不够，没有拿来当候选。见 ``doc/ict_smc_flow.md``。
+    """
+    if not 0 <= min_imbalance <= 1:
+        raise ValueError("min_imbalance 必须在 0 和 1 之间")
+    return replace(evaluated_params(), min_flow_imbalance=min_imbalance)
+
+
 def generate_signals(
     candles_30: Sequence[Candle],
     candles_60: Sequence[Candle],
     params: StrategyParams | None = None,
+    flow: Sequence[TakerBar] | None = None,
 ) -> SignalBook:
     """30m 入场，60m（1 小时）定偏向。两列都要按开盘时间升序。"""
     params = params or StrategyParams()
@@ -172,6 +190,7 @@ def generate_signals(
         params=params,
         bias_4h=bias_4h,
         structure_age=structure_age,
+        flow_at=_flow_index(flow, params),
     )
     return SignalBook(
         candles=tuple(candles_30),
@@ -212,8 +231,11 @@ def entry_signals(
     params: StrategyParams | None = None,
     bias_4h: Sequence[str] | None = None,
     structure_age: Sequence[tuple[str, str, int] | None] | None = None,
+    flow_at: Mapping[int, TakerBar] | None = None,
 ) -> list[Signal]:
     params = params or StrategyParams()
+    if params.min_flow_imbalance is not None and flow_at is None:
+        raise ValueError("设置了主动成交过滤，但没有传入 taker flow")
     if len(bias_30) != len(candles) or len(bias_1h) != len(candles):
         raise ValueError("bias 长度必须和 30m K 线一致")
     if bias_4h is not None and len(bias_4h) != len(candles):
@@ -236,6 +258,7 @@ def entry_signals(
             params=params,
             bias_4h=bias_4h,
             structure_age=structure_age,
+            flow_at=flow_at,
         )
         if signal is None or signal.index in used_bars:
             continue
@@ -278,8 +301,13 @@ def _from_sweep(
     params: StrategyParams,
     bias_4h: Sequence[str] | None = None,
     structure_age: Sequence[tuple[str, str, int] | None] | None = None,
+    flow_at: Mapping[int, TakerBar] | None = None,
 ) -> Signal | None:
     trade_bias: TradeBias = "bull" if sweep.side == "sell" else "bear"
+    if params.min_flow_imbalance is not None:
+        bar = None if flow_at is None else flow_at.get(open_ms(candles[sweep.index].open_ts))
+        if not aggressor_confirms(sweep.side, bar, params.min_flow_imbalance):
+            return None
     if (trade_bias == "bull" and "buy" not in params.sides) or (
         trade_bias == "bear" and "sell" not in params.sides
     ):
@@ -522,6 +550,17 @@ def _bias_code(value: str) -> float:
     if value == "bear":
         return -1.0
     return 0.0
+
+
+def _flow_index(
+    flow: Sequence[TakerBar] | None,
+    params: StrategyParams,
+) -> Mapping[int, TakerBar] | None:
+    if params.min_flow_imbalance is None:
+        return None
+    if flow is None:
+        raise ValueError("设置了主动成交过滤，但没有传入 taker flow")
+    return index_flow(flow)
 
 
 def _liquidity_params(params: StrategyParams):

@@ -12,8 +12,8 @@ from clickhouse_connect.driver.client import Client
 
 from dataprice.buffer import BatchBuffer
 from dataprice.config import Settings, get_settings
-from dataprice.contracts import Bar, BookQuote, Tick
-from dataprice.market.validate import validate_bar, validate_quote, validate_tick
+from dataprice.contracts import Bar, BookQuote, TakerFlow, Tick
+from dataprice.market.validate import validate_bar, validate_quote, validate_taker_flow, validate_tick
 from dataprice.timeutil import clock_ns, ensure_aware
 
 _BAR_COLUMNS = [
@@ -53,6 +53,19 @@ _QUOTE_COLUMNS = [
     "spread_bps",
 ]
 
+_FLOW_COLUMNS = [
+    "symbol",
+    "source",
+    "freq",
+    "exchange_ts",
+    "local_recv_ts",
+    "ingest_ts",
+    "buy_volume",
+    "sell_volume",
+    "volume",
+    "trade_count",
+]
+
 
 class MarketRepository:
     def __init__(self, client: Client) -> None:
@@ -77,6 +90,13 @@ class MarketRepository:
             return 0
         frame = _quotes_frame([validate_quote(quote) for quote in quotes])
         self._client.insert_df("quotes", frame)
+        return len(frame)
+
+    def insert_taker_flow(self, rows: Sequence[TakerFlow]) -> int:
+        if not rows:
+            return 0
+        frame = _flow_frame([validate_taker_flow(row) for row in rows])
+        self._client.insert_df("taker_flow", frame)
         return len(frame)
 
     def query_bars(
@@ -166,8 +186,43 @@ class MarketRepository:
         )
         return _localize(frame)
 
+    def query_taker_flow(
+        self,
+        symbols: Sequence[str],
+        freq: str,
+        start: datetime,
+        end: datetime,
+        *,
+        source: str,
+    ) -> pd.DataFrame:
+        if not symbols:
+            raise ValueError("symbols 不能为空")
+        ensure_aware(start)
+        ensure_aware(end)
+        frame = self._client.query_df(
+            """
+            SELECT symbol, source, freq, exchange_ts, local_recv_ts, ingest_ts,
+                   buy_volume, sell_volume, volume, trade_count
+            FROM taker_flow FINAL
+            WHERE freq = {freq:String}
+              AND source = {source:String}
+              AND symbol IN {symbols:Array(String)}
+              AND exchange_ts >= {start:DateTime64(9, 'UTC')}
+              AND exchange_ts < {end:DateTime64(9, 'UTC')}
+            ORDER BY symbol, exchange_ts
+            """,
+            parameters={
+                "freq": freq,
+                "source": source,
+                "symbols": list(symbols),
+                "start": _utc_naive(start),
+                "end": _utc_naive(end),
+            },
+        )
+        return _localize(frame)
+
     def delete_symbol(self, table: str, symbol: str) -> None:
-        if table not in ("bars", "ticks", "quotes"):
+        if table not in ("bars", "ticks", "quotes", "taker_flow"):
             raise ValueError(table)
         self._client.command(
             f"DELETE FROM {table} WHERE symbol = {{symbol:String}}",
@@ -248,6 +303,28 @@ def _ticks_frame(ticks: Sequence[Tick]) -> pd.DataFrame:
             for tick in ticks
         ],
         columns=_TICK_COLUMNS,
+    )
+
+
+def _flow_frame(rows: Sequence[TakerFlow]) -> pd.DataFrame:
+    ingest = _ns_to_utc(clock_ns())
+    return pd.DataFrame(
+        [
+            (
+                row.symbol,
+                row.source,
+                row.freq,
+                _as_utc(row.exchange_ts),
+                _as_utc(row.local_recv_ts),
+                ingest,
+                row.buy_volume,
+                row.sell_volume,
+                row.volume,
+                row.trade_count,
+            )
+            for row in rows
+        ],
+        columns=_FLOW_COLUMNS,
     )
 
 
