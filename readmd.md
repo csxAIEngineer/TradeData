@@ -49,6 +49,8 @@ uv run dataprice backtest --symbol BTC-USDT --months 24
 
 `uv run dataprice backtest --short-regime` 只对空头套用同一道效率比，多头仍是评估候选。日线偏空才做空的规则在训练里没有通过笔数和盈亏门槛，没有拿来当候选。留出样本的空头还是亏的。说明写在 `doc/ict_smc_short.md`。
 
+`uv run dataprice backtest --debate-daily` 在每根已收盘的 UTC 日线上，用当时已经知道的 4 小时效率比和结构，给下一日指定 long、short、grid 或 flat。三条猎手的默认参数不改，留出样本也不再调 0.25、CLV 0.70 和强区间。说明在 `doc/debate_daily.md`。
+
 代码按层分开：
 
 dataprice.hotpath：内存里的持仓、额度和出站队列。evaluate / apply_fill 没有数据库调用。

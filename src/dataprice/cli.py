@@ -70,6 +70,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="只对空头要求大约三天的 4 小时效率比至少 0.25，多头仍是评估候选",
     )
+    backtest.add_argument(
+        "--debate-daily",
+        action="store_true",
+        help="按已收盘日线在 long、short、grid、flat 里选一个，当天不再改",
+    )
     args = parser.parse_args(argv)
     if args.command == "bootstrap":
         from dataprice.bootstrap import bootstrap
@@ -131,15 +136,48 @@ def main(argv: list[str] | None = None) -> None:
 
         chosen = [
             name
-            for name in ("baseline", "flow", "regime", "trend_regime", "grid", "long", "short_regime")
+            for name in (
+                "baseline",
+                "flow",
+                "regime",
+                "trend_regime",
+                "grid",
+                "long",
+                "short_regime",
+                "debate_daily",
+            )
             if getattr(args, name)
         ]
         if len(chosen) > 1:
             parser.error(
-                "--baseline、--flow、--regime、--trend-regime、--grid、--long、--short-regime 只能选一个"
+                "--baseline、--flow、--regime、--trend-regime、--grid、--long、"
+                "--short-regime、--debate-daily 只能选一个"
             )
         end = datetime.now(UTC)
         start = end - timedelta(days=args.months * 30)
+        if args.debate_daily:
+            if args.buy_only:
+                parser.error("--debate-daily 不和 --buy-only 一起用")
+            from dataprice.strategy.debate import format_debate_report, run_stored_debate
+
+            try:
+                debate_result, bars_30, bars_60 = run_stored_debate(
+                    symbol=args.symbol,
+                    start=start,
+                    end=end,
+                    fee_bps=args.fee_bps,
+                    slippage_bps=args.slippage_bps,
+                )
+            except RuntimeError as exc:
+                parser.error(str(exc))
+            logging.info("%s 30m %s 根，60m %s 根", args.symbol, bars_30, bars_60)
+            for line in format_debate_report(
+                debate_result,
+                fee_bps=args.fee_bps,
+                slippage_bps=args.slippage_bps,
+            ).splitlines():
+                logging.info("%s", line)
+            return
         if args.grid:
             from dataprice.strategy.grid import GridParams, format_grid_report, run_stored_grid
 

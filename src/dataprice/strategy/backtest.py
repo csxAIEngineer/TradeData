@@ -24,7 +24,7 @@ from dataprice.strategy.candles import Candle
 from dataprice.strategy.flow import TakerBar
 from dataprice.strategy.signals import Signal, SignalBook, StrategyParams, generate_signals
 
-ExitReason = Literal["stop", "target", "bias_flip", "end"]
+ExitReason = Literal["stop", "target", "bias_flip", "end", "mode"]
 
 
 @dataclass(frozen=True)
@@ -122,9 +122,16 @@ def simulate(
     max_position_qty: Decimal = Decimal("10"),
     exit_on_bias_flip: bool = True,
     breakeven_at_r: float | None = None,
+    force_flat: Sequence[bool] | None = None,
 ) -> BacktestResult:
+    """``force_flat[i]`` 为真时，这根开盘价平掉上一模式留下的仓，再考虑这根的新信号。
+
+    默认不传，止损、止盈和偏向翻转照旧。日线分配用它在模式切换的第一根交接。
+    """
     if len(book.bias_1h) != len(candles):
         raise ValueError("1h 偏向长度必须和 30m K 线一致")
+    if force_flat is not None and len(force_flat) != len(candles):
+        raise ValueError("force_flat 长度必须和 K 线一致")
     state = TradingState()
     state.load_snapshot(
         positions=[],
@@ -144,13 +151,16 @@ def simulate(
         if position is not None:
             _arm_breakeven(position)
             closing = index == last and index > position.entry_index
-            outcome = _exit_price(
-                candle,
-                position,
-                book.bias_1h[index],
-                index,
-                exit_on_bias_flip=exit_on_bias_flip,
-            )
+            if force_flat is not None and force_flat[index] and index > position.entry_index:
+                outcome = ("mode", candle.open)
+            else:
+                outcome = _exit_price(
+                    candle,
+                    position,
+                    book.bias_1h[index],
+                    index,
+                    exit_on_bias_flip=exit_on_bias_flip,
+                )
             if outcome is None and closing:
                 outcome = ("end", candle.close)
             if outcome is not None:

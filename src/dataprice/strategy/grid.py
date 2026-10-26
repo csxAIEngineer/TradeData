@@ -234,12 +234,19 @@ def simulate_grid(
     params: GridParams | None = None,
     *,
     buying_power: Decimal = Decimal("1000000"),
+    enabled: Sequence[bool] | None = None,
 ) -> GridResult:
-    """``er_at[i]`` 是第 i 根收盘时才知道的效率比。挂单用上一根的值。"""
+    """``er_at[i]`` 是第 i 根收盘时才知道的效率比。挂单用上一根的值。
+
+    ``enabled`` 不传时，仍用效率比低于 ``max_er`` 决定这一根能不能做网格。
+    传入时改由这个布尔序列决定，用来接日线分配；``--grid`` 不传它。
+    """
     params = params or GridParams()
     assert_sorted(candles)
     if len(er_at) != len(candles):
         raise ValueError("效率比长度必须和 30m K 线一致")
+    if enabled is not None and len(enabled) != len(candles):
+        raise ValueError("enabled 长度必须和 K 线一致")
     qty = q_qty(params.unit_qty)
     swings = structure_path(candles, params.wing).swings
     levels = map_liquidity(
@@ -257,15 +264,18 @@ def simulate_grid(
     for index, candle in enumerate(candles):
         bar_units = abs(_units(book.lots))
         if index > 0:
-            previous = er_at[index - 1]
-            enabled = previous is not None and previous < params.max_er
-            if not enabled or index < halt_until:
+            if enabled is not None:
+                bar_on = bool(enabled[index])
+            else:
+                previous = er_at[index - 1]
+                bar_on = previous is not None and previous < params.max_er
+            if not bar_on or index < halt_until:
                 if book.lots:
                     book.flatten(
                         index,
                         candle,
                         candle.open,
-                        "trend" if not enabled else "drawdown",
+                        "trend" if not bar_on else "drawdown",
                     )
                     frozen = None
                     bar_units = max(bar_units, abs(_units(book.lots)))
