@@ -36,6 +36,8 @@ uv run dataprice backtest --symbol BTC-USDT --months 24
 
 `dataprice.strategy` 做 ICT + SMC：1 小时用 BOS/CHoCH 定偏向，30 分钟只做同向结构里、扫完逆向流动性之后回到 FVG 或订单块的单。`generate_signals` 不连数据库。这条回测不出图。
 
+`make backtest` 跑的是评估候选（4 小时同向、只做等高/等低、止损不超过 80 个基点、限价进在失衡近端），默认每边 5 个基点手续费和 2 个基点滑点。最初的宽松规则用 `uv run dataprice backtest --baseline --fee-bps 0 --slippage-bps 0`。结论写在 `doc/ict_smc_evaluation.md`：全样本在这套费用下略赚，2026-03 之后的留出样本不赚。
+
 代码按层分开：
 
 dataprice.hotpath：内存里的持仓、额度和出站队列。evaluate / apply_fill 没有数据库调用。

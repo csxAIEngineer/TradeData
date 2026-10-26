@@ -26,7 +26,9 @@ def main(argv: list[str] | None = None) -> None:
     backtest = sub.add_parser("backtest", help="用 market.bars 的 30m/60m 跑 ICT+SMC 回测")
     backtest.add_argument("--symbol", default="BTC-USDT")
     backtest.add_argument("--months", type=int, default=24, help="回测窗口，大约 30 天算一个月")
-    backtest.add_argument("--fee-bps", type=float, default=0.0)
+    backtest.add_argument("--fee-bps", type=float, default=5.0, help="每边手续费，基点。默认 5")
+    backtest.add_argument("--slippage-bps", type=float, default=2.0, help="每边不利滑点，基点。默认 2")
+    backtest.add_argument("--baseline", action="store_true", help="用最初的宽松规则，而不是评估候选")
     args = parser.parse_args(argv)
     if args.command == "bootstrap":
         from dataprice.bootstrap import bootstrap
@@ -62,16 +64,20 @@ def main(argv: list[str] | None = None) -> None:
         from datetime import datetime, timedelta
 
         from dataprice.strategy.backtest import format_report, run_stored_backtest
+        from dataprice.strategy.signals import StrategyParams, evaluated_params
         from dataprice.timeutil import UTC
 
         end = datetime.now(UTC)
         start = end - timedelta(days=args.months * 30)
+        params = StrategyParams() if args.baseline else evaluated_params()
         try:
             result, bars_30, bars_60 = run_stored_backtest(
                 symbol=args.symbol,
                 start=start,
                 end=end,
+                params=params,
                 fee_bps=args.fee_bps,
+                slippage_bps=args.slippage_bps,
             )
         except RuntimeError as exc:
             parser.error(str(exc))

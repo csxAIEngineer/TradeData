@@ -5,7 +5,9 @@
 现金占用单独记，结束后购买力回到同一套公式。
 
 成交在信号那根的收盘价。止损和止盈从下一根开始看。同一根先碰到止损
-（跳空则按开盘价）就按止损出，不再给止盈。1 小时偏向不再同向时，按收盘价退出。
+（跳空则按开盘价）就按止损出，不再给止盈。``exit_on_bias_flip`` 为真时，
+1 小时偏向不再同向就按收盘价退出。``breakeven_at_r`` 在价格先走出这么多 R
+的下一根，把止损改到进场价。``slippage_bps`` 让每一笔成交都往不利方向滑。
 """
 
 from __future__ import annotations
@@ -71,6 +73,8 @@ class _Position:
     zone_kind: str
     bp_before: Decimal
     mirrored: bool
+    initial_stop: float
+    be_ready: bool = False
 
 
 def run_backtest(
@@ -81,10 +85,12 @@ def run_backtest(
     symbol: str = "BTC-USDT",
     qty: Decimal = Decimal("0.01"),
     fee_bps: float = 0.0,
+    slippage_bps: float = 0.0,
     buying_power: Decimal = Decimal("1000000"),
     max_order_notional: Decimal = Decimal("1000000"),
     max_position_qty: Decimal = Decimal("10"),
 ) -> BacktestResult:
+    params = params or StrategyParams()
     book = generate_signals(candles_30, candles_60, params)
     return simulate(
         candles_30,
@@ -92,9 +98,12 @@ def run_backtest(
         symbol=symbol,
         qty=qty,
         fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
         buying_power=buying_power,
         max_order_notional=max_order_notional,
         max_position_qty=max_position_qty,
+        exit_on_bias_flip=params.exit_on_bias_flip,
+        breakeven_at_r=params.breakeven_at_r,
     )
 
 
@@ -105,9 +114,12 @@ def simulate(
     symbol: str = "BTC-USDT",
     qty: Decimal = Decimal("0.01"),
     fee_bps: float = 0.0,
+    slippage_bps: float = 0.0,
     buying_power: Decimal = Decimal("1000000"),
     max_order_notional: Decimal = Decimal("1000000"),
     max_position_qty: Decimal = Decimal("10"),
+    exit_on_bias_flip: bool = True,
+    breakeven_at_r: float | None = None,
 ) -> BacktestResult:
     if len(book.bias_1h) != len(candles):
         raise ValueError("1h 偏向长度必须和 30m K 线一致")
@@ -128,16 +140,36 @@ def simulate(
     last = len(candles) - 1
     for index, candle in enumerate(candles):
         if position is not None:
+            _arm_breakeven(position)
             closing = index == last and index > position.entry_index
-            outcome = _exit_price(candle, position, book.bias_1h[index], index)
+            outcome = _exit_price(
+                candle,
+                position,
+                book.bias_1h[index],
+                index,
+                exit_on_bias_flip=exit_on_bias_flip,
+            )
             if outcome is None and closing:
                 outcome = ("end", candle.close)
             if outcome is not None:
                 reason, price = outcome
-                trades.append(_close(state, position, index, candle.open_ts, price, reason, fee_bps))
+                trades.append(
+                    _close(
+                        state,
+                        position,
+                        index,
+                        candle.open_ts,
+                        price,
+                        reason,
+                        fee_bps,
+                        slippage_bps,
+                    )
+                )
                 position = None
+            else:
+                _mark_breakeven(position, candle, breakeven_at_r)
         if position is None and index in by_index and index < last:
-            position = _open(state, by_index[index], symbol, qty, fee_bps)
+            position = _open(state, by_index[index], symbol, qty, fee_bps, slippage_bps)
     open_side = position.side if position is not None else None
     open_entry = position.entry if position is not None else None
     assert state.risk is not None
@@ -152,15 +184,78 @@ def simulate(
 
 
 def format_report(result: BacktestResult) -> str:
-    wins = sum(1 for trade in result.trades if trade.pnl > 0)
-    losses = sum(1 for trade in result.trades if trade.pnl < 0)
+    stats = performance(result)
     lines = [
-        f"信号 {result.signals}，平仓 {len(result.trades)}，胜 {wins}，负 {losses}",
-        f"已实现盈亏 {result.realized_pnl}，购买力 {result.starting_buying_power} → {result.ending_buying_power}",
+        f"信号 {result.signals}，平仓 {stats.trades}，胜率 {stats.win_rate:.1%}，盈亏比 {stats.profit_factor:.2f}",
+        f"已实现盈亏 {result.realized_pnl}，最大回撤 {stats.max_drawdown}，平均持有 {stats.avg_hold_bars:.1f} 根",
+        f"购买力 {result.starting_buying_power} → {result.ending_buying_power}",
     ]
     if result.open_side is not None:
         lines.append(f"未平仓 {result.open_side} @ {result.open_entry}")
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class Performance:
+    trades: int
+    pnl: Decimal
+    win_rate: float
+    profit_factor: float
+    max_drawdown: Decimal
+    avg_hold_bars: float
+    avg_r: float
+
+
+def performance(result: BacktestResult) -> Performance:
+    """已平仓交易的汇总。盈亏比是盈利合计除以亏损绝对值，没有亏损时为无穷。"""
+    wins = [trade.pnl for trade in result.trades if trade.pnl > 0]
+    losses = [trade.pnl for trade in result.trades if trade.pnl < 0]
+    gross_win = sum(wins, Decimal("0"))
+    gross_loss = sum(losses, Decimal("0"))
+    if gross_loss < 0:
+        factor = float(gross_win / -gross_loss)
+    elif gross_win > 0:
+        factor = float("inf")
+    else:
+        factor = 0.0
+    equity = Decimal("0")
+    peak = Decimal("0")
+    max_dd = Decimal("0")
+    r_total = 0.0
+    r_count = 0
+    holds = 0
+    for trade in result.trades:
+        equity += trade.pnl
+        if equity > peak:
+            peak = equity
+        drawdown = peak - equity
+        if drawdown > max_dd:
+            max_dd = drawdown
+        holds += trade.exit_index - trade.entry_index
+        multiple = _r_multiple(trade)
+        if multiple is not None:
+            r_total += multiple
+            r_count += 1
+    count = len(result.trades)
+    return Performance(
+        trades=count,
+        pnl=result.realized_pnl,
+        win_rate=(len(wins) / count) if count else 0.0,
+        profit_factor=factor,
+        max_drawdown=q_cash(max_dd),
+        avg_hold_bars=(holds / count) if count else 0.0,
+        avg_r=(r_total / r_count) if r_count else 0.0,
+    )
+
+
+def _r_multiple(trade: Trade) -> float | None:
+    entry = float(trade.entry)
+    exit_ = float(trade.exit)
+    risk = (entry - trade.stop) if trade.side == "buy" else (trade.stop - entry)
+    if risk <= 0:
+        return None
+    move = (exit_ - entry) if trade.side == "buy" else (entry - exit_)
+    return move / risk
 
 
 def _open(
@@ -169,9 +264,10 @@ def _open(
     symbol: str,
     qty: Decimal,
     fee_bps: float,
+    slippage_bps: float,
 ) -> _Position | None:
     assert state.risk is not None
-    price = _px(signal.entry)
+    price = _px(_slipped(signal.entry, signal.side, slippage_bps))
     fee = _fee(qty, price, fee_bps)
     before = state.risk.buying_power
     if signal.side == "buy":
@@ -199,6 +295,7 @@ def _open(
         zone_kind=signal.zone_kind,
         bp_before=before,
         mirrored=mirrored,
+        initial_stop=signal.stop,
     )
 
 
@@ -210,9 +307,11 @@ def _close(
     price: float,
     reason: ExitReason,
     fee_bps: float,
+    slippage_bps: float,
 ) -> Trade:
     assert state.risk is not None
-    exit_px = _px(price)
+    close_side: Side = "sell" if position.side == "buy" else "buy"
+    exit_px = _px(_slipped(price, close_side, slippage_bps))
     fee = _fee(position.qty, exit_px, fee_bps)
     if position.mirrored:
         state.apply_fill(
@@ -250,6 +349,8 @@ def _exit_price(
     position: _Position,
     bias: str,
     index: int,
+    *,
+    exit_on_bias_flip: bool,
 ) -> tuple[ExitReason, float] | None:
     if index <= position.entry_index:
         return None
@@ -260,7 +361,7 @@ def _exit_price(
             return ("stop", position.stop)
         if candle.high >= position.target:
             return ("target", position.target)
-        if bias != "bull":
+        if exit_on_bias_flip and bias != "bull":
             return ("bias_flip", candle.close)
         return None
     if candle.open >= position.stop:
@@ -269,9 +370,34 @@ def _exit_price(
         return ("stop", position.stop)
     if candle.low <= position.target:
         return ("target", position.target)
-    if bias != "bear":
+    if exit_on_bias_flip and bias != "bear":
         return ("bias_flip", candle.close)
     return None
+
+
+def _arm_breakeven(position: _Position) -> None:
+    """上一根已经走出 breakeven_at_r，这一根开始用进场价当止损。"""
+    if not position.be_ready:
+        return
+    entry = float(position.entry)
+    if position.side == "buy" and position.stop < entry:
+        position.stop = entry
+    elif position.side == "sell" and position.stop > entry:
+        position.stop = entry
+    position.be_ready = False
+
+
+def _mark_breakeven(position: _Position, candle: Candle, breakeven_at_r: float | None) -> None:
+    if breakeven_at_r is None:
+        return
+    entry = float(position.entry)
+    risk = abs(entry - position.initial_stop)
+    if risk <= 0:
+        return
+    if position.side == "buy" and candle.high >= entry + risk * breakeven_at_r:
+        position.be_ready = True
+    elif position.side == "sell" and candle.low <= entry - risk * breakeven_at_r:
+        position.be_ready = True
 
 
 def _short_allowed(state: TradingState, qty: Decimal, price: Decimal, fee: Decimal) -> bool:
@@ -294,6 +420,7 @@ def run_stored_backtest(
     params: StrategyParams | None = None,
     qty: Decimal = Decimal("0.01"),
     fee_bps: float = 0.0,
+    slippage_bps: float = 0.0,
     settings: Settings | None = None,
 ) -> tuple[BacktestResult, int, int]:
     """从 ClickHouse ``market.bars`` 读 30m / 60m，再跑回测。"""
@@ -317,8 +444,18 @@ def run_stored_backtest(
         symbol=symbol,
         qty=qty,
         fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
     )
     return result, len(candles_30), len(candles_60)
+
+
+def _slipped(price: float, side: Side, slippage_bps: float) -> float:
+    if slippage_bps <= 0:
+        return price
+    slip = slippage_bps / 10_000.0
+    if side == "buy":
+        return price * (1.0 + slip)
+    return price * (1.0 - slip)
 
 
 def _px(value: float) -> Decimal:

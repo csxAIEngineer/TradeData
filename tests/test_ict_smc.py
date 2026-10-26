@@ -5,8 +5,8 @@ from decimal import Decimal
 
 import pytest
 
-from dataprice.strategy.backtest import format_report, simulate
-from dataprice.strategy.candles import Candle
+from dataprice.strategy.backtest import format_report, performance, simulate
+from dataprice.strategy.candles import Candle, aggregate_candles
 from dataprice.strategy.imbalance import find_zones
 from dataprice.strategy.liquidity import Level, LiquidityMap, Sweep, map_liquidity
 from dataprice.strategy.signals import (
@@ -15,6 +15,7 @@ from dataprice.strategy.signals import (
     StrategyParams,
     bias_asof,
     entry_signals,
+    evaluated_params,
     generate_signals,
     to_factor_frame,
 )
@@ -362,3 +363,103 @@ def test_short_target_and_notional_limit():
         max_order_notional=Decimal("10"),
     )
     assert blocked.trades == ()
+
+
+def test_quality_filters_drop_wide_or_chased_entries():
+    candles = _candles(_long_rows())
+    bull = tuple("bull" for _ in candles)
+    sell_side = Level("eql", "sell", 98.0, 0)
+    buy_side = Level("eqh", "buy", 112.0, 0)
+    sweep = Sweep(5, "sell", sell_side, 97.0)
+    zones = find_zones(candles)
+    liquidity = LiquidityMap((sell_side, buy_side), (sweep,))
+    tight = entry_signals(
+        candles,
+        bias_30=bull,
+        bias_1h=bull,
+        liquidity=liquidity,
+        zones=zones,
+        params=StrategyParams(max_risk_bps=80),
+    )
+    assert tight == []
+    limited = entry_signals(
+        candles,
+        bias_30=bull,
+        bias_1h=bull,
+        liquidity=liquidity,
+        zones=zones,
+        params=StrategyParams(entry="zone"),
+    )
+    assert len(limited) == 1
+    assert limited[0].entry == pytest.approx(103.2)
+
+
+def test_slippage_and_disabled_bias_flip_change_the_fill():
+    candles = _candles(_long_rows())
+    bull = tuple("bull" for _ in candles)
+    signal = Signal(
+        index=10,
+        open_ts=candles[10].open_ts,
+        side="buy",
+        entry=104,
+        stop=97,
+        target=112,
+        zone_kind="fvg",
+        sweep_index=5,
+        zone_index=8,
+        liquidity="eql",
+    )
+    book = SignalBook(tuple(candles), (signal,), bull, bull)
+    plain = simulate(candles, book, qty=Decimal("0.01"))
+    slipped = simulate(candles, book, qty=Decimal("0.01"), slippage_bps=10)
+    assert slipped.trades[0].pnl < plain.trades[0].pnl
+    stats = performance(plain)
+    assert stats.win_rate == 1
+    assert stats.pnl == Decimal("0.08")
+    assert stats.max_drawdown == 0
+    assert stats.profit_factor == float("inf")
+
+    flipped = _candles([(100, 101, 99, 100), (104, 105, 103, 104), (100.5, 101, 99, 100.5)])
+    flip_book = SignalBook(
+        tuple(flipped),
+        (
+            Signal(
+                index=1,
+                open_ts=flipped[1].open_ts,
+                side="buy",
+                entry=104,
+                stop=97,
+                target=112,
+                zone_kind="ob",
+                sweep_index=0,
+                zone_index=1,
+                liquidity="session_low",
+            ),
+        ),
+        ("bull", "bull", "bear"),
+        ("bull", "bull", "bear"),
+    )
+    held = simulate(flipped, flip_book, qty=Decimal("0.01"), exit_on_bias_flip=False)
+    assert held.trades[0].reason == "end"
+
+
+def test_aggregate_drops_an_incomplete_4h_bucket():
+    start = datetime(2026, 1, 6, tzinfo=UTC)
+    candles = _candles([(1, 2, 1, 1.5)] * 5, start=start, minutes=60)
+    candles[1] = Candle(candles[1].open_ts, 1.5, 3, 1.4, 2.5, 1)
+    bars = aggregate_candles(candles, "4h")
+    assert len(bars) == 1
+    assert bars[0].open_ts == start
+    assert bars[0].open == 1
+    assert bars[0].high == 3
+    assert bars[0].low == 1
+    assert bars[0].close == candles[3].close
+
+
+def test_evaluated_profile_is_the_tighter_rule_set():
+    params = evaluated_params()
+    assert params.confirm_4h is True
+    assert params.max_risk_bps == 80
+    assert params.liquidity_kinds == ("eqh", "eql")
+    assert params.entry == "zone"
+    assert params.exit_on_bias_flip is False
