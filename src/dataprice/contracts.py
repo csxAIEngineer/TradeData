@@ -80,6 +80,26 @@ class Tick:
 
 
 @dataclass(frozen=True)
+class BookQuote:
+    """买卖一价。price 是中间价，spread_bps 是买卖价差（基点）。ingest_ts 落库时再打。"""
+
+    symbol: str
+    source: str
+    exchange_ts: datetime
+    local_recv_ts: datetime
+    bid: float
+    ask: float
+
+    @property
+    def price(self) -> float:
+        return (self.bid + self.ask) / 2.0
+
+    @property
+    def spread_bps(self) -> float:
+        return (self.ask - self.bid) / self.price * 10_000
+
+
+@dataclass(frozen=True)
 class OrderEvent:
     """策略线程写入出站队列的订单。ingest_ts 由落库时再打。"""
 

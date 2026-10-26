@@ -12,8 +12,8 @@ from clickhouse_connect.driver.client import Client
 
 from dataprice.buffer import BatchBuffer
 from dataprice.config import Settings, get_settings
-from dataprice.contracts import Bar, Tick
-from dataprice.market.validate import validate_bar, validate_tick
+from dataprice.contracts import Bar, BookQuote, Tick
+from dataprice.market.validate import validate_bar, validate_quote, validate_tick
 from dataprice.timeutil import clock_ns, ensure_aware
 
 _BAR_COLUMNS = [
@@ -41,6 +41,18 @@ _TICK_COLUMNS = [
     "side",
 ]
 
+_QUOTE_COLUMNS = [
+    "symbol",
+    "source",
+    "exchange_ts",
+    "local_recv_ts",
+    "ingest_ts",
+    "bid",
+    "ask",
+    "price",
+    "spread_bps",
+]
+
 
 class MarketRepository:
     def __init__(self, client: Client) -> None:
@@ -58,6 +70,13 @@ class MarketRepository:
             return 0
         frame = _ticks_frame([validate_tick(tick) for tick in ticks])
         self._client.insert_df("ticks", frame)
+        return len(frame)
+
+    def insert_quotes(self, quotes: Sequence[BookQuote]) -> int:
+        if not quotes:
+            return 0
+        frame = _quotes_frame([validate_quote(quote) for quote in quotes])
+        self._client.insert_df("quotes", frame)
         return len(frame)
 
     def query_bars(
@@ -119,8 +138,36 @@ class MarketRepository:
         )
         return _localize(frame)
 
+    def query_quotes(
+        self,
+        symbols: Sequence[str],
+        start: datetime,
+        end: datetime,
+    ) -> pd.DataFrame:
+        if not symbols:
+            raise ValueError("symbols 不能为空")
+        ensure_aware(start)
+        ensure_aware(end)
+        frame = self._client.query_df(
+            """
+            SELECT symbol, source, exchange_ts, local_recv_ts, ingest_ts,
+                   bid, ask, price, spread_bps
+            FROM quotes FINAL
+            WHERE symbol IN {symbols:Array(String)}
+              AND exchange_ts >= {start:DateTime64(9, 'UTC')}
+              AND exchange_ts < {end:DateTime64(9, 'UTC')}
+            ORDER BY symbol, source, exchange_ts, local_recv_ts
+            """,
+            parameters={
+                "symbols": list(symbols),
+                "start": _utc_naive(start),
+                "end": _utc_naive(end),
+            },
+        )
+        return _localize(frame)
+
     def delete_symbol(self, table: str, symbol: str) -> None:
-        if table not in ("bars", "ticks"):
+        if table not in ("bars", "ticks", "quotes"):
             raise ValueError(table)
         self._client.command(
             f"DELETE FROM {table} WHERE symbol = {{symbol:String}}",
@@ -145,6 +192,17 @@ def flush_ticks(buffer: BatchBuffer[Tick], repo: MarketRepository) -> int:
         return 0
     try:
         return repo.insert_ticks(rows)
+    except Exception:
+        buffer.prepend(rows)
+        raise
+
+
+def flush_quotes(buffer: BatchBuffer[BookQuote], repo: MarketRepository) -> int:
+    rows = buffer.take()
+    if not rows:
+        return 0
+    try:
+        return repo.insert_quotes(rows)
     except Exception:
         buffer.prepend(rows)
         raise
@@ -190,6 +248,27 @@ def _ticks_frame(ticks: Sequence[Tick]) -> pd.DataFrame:
             for tick in ticks
         ],
         columns=_TICK_COLUMNS,
+    )
+
+
+def _quotes_frame(quotes: Sequence[BookQuote]) -> pd.DataFrame:
+    ingest = _ns_to_utc(clock_ns())
+    return pd.DataFrame(
+        [
+            (
+                quote.symbol,
+                quote.source,
+                _as_utc(quote.exchange_ts),
+                _as_utc(quote.local_recv_ts),
+                ingest,
+                quote.bid,
+                quote.ask,
+                quote.price,
+                quote.spread_bps,
+            )
+            for quote in quotes
+        ],
+        columns=_QUOTE_COLUMNS,
     )
 
 

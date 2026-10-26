@@ -10,12 +10,12 @@ import pandas as pd
 
 from dataprice.buffer import BatchBuffer
 from dataprice.config import get_settings
-from dataprice.contracts import Bar, FillEvent, OrderEvent, Position, Tick
+from dataprice.contracts import Bar, BookQuote, FillEvent, OrderEvent, Position, Tick
 from dataprice.factors.store import FactorStore
 from dataprice.hotpath.outbox import Outbox
 from dataprice.hotpath.state import OrderIntent, TradingState
 from dataprice.ledger.repo import ledger_session
-from dataprice.market.repo import flush_bars, flush_ticks, market_session
+from dataprice.market.repo import flush_bars, flush_quotes, flush_ticks, market_session
 from dataprice.session import persist, preload
 from dataprice.timeutil import clock_ns, to_ns
 
@@ -139,17 +139,23 @@ def _market() -> None:
     bars.add(Bar(SYMBOL, "1m", later, later, 10.5, 12, 10, 11, 800, 8800))
     ticks = BatchBuffer[Tick](high_watermark=100)
     ticks.add(Tick(SYMBOL, "smoke-1", exchange, received, 10.5, 100, "buy"))
+    sample = BookQuote(SYMBOL, "okx", exchange, received, 10.0, 10.5)
+    quotes = BatchBuffer[BookQuote](high_watermark=100)
+    quotes.add(sample)
     with market_session() as market:
         try:
             flush_bars(bars, market)
             flush_ticks(ticks, market)
+            flush_quotes(quotes, market)
             start = datetime(2024, 1, 2, tzinfo=timezone.utc)
             end = start + timedelta(days=1)
             got = market.query_bars([SYMBOL], "1m", start, end)
             got_ticks = market.query_ticks([SYMBOL], start, end)
+            got_quotes = market.query_quotes([SYMBOL], start, end)
         finally:
             market.delete_symbol("bars", SYMBOL)
             market.delete_symbol("ticks", SYMBOL)
+            market.delete_symbol("quotes", SYMBOL)
     if len(got) != 2:
         raise RuntimeError(f"K 线读回行数是 {len(got)}")
     back_ns = to_ns(pd.Timestamp(got.iloc[0]["exchange_ts"]))
@@ -157,7 +163,21 @@ def _market() -> None:
         raise RuntimeError(f"纳秒时间戳丢了: 写入 {int(exchange.value)} 读回 {back_ns}")
     if len(got_ticks) != 1 or got_ticks.iloc[0]["trade_id"] != "smoke-1":
         raise RuntimeError(f"逐笔读回异常: {got_ticks}")
-    log.info("ClickHouse 行情：批量写入后按标的读回，纳秒时间戳保持不变")
+    if len(got_quotes) != 1:
+        raise RuntimeError(f"买卖一价读回行数是 {len(got_quotes)}")
+    row = got_quotes.iloc[0]
+    if row["source"] != "okx" or float(row["bid"]) != sample.bid or float(row["ask"]) != sample.ask:
+        raise RuntimeError(f"买卖一价读回异常: {row.to_dict()}")
+    price_off = abs(float(row["price"]) - sample.price) > 1e-9
+    spread_off = abs(float(row["spread_bps"]) - sample.spread_bps) > 1e-6
+    if price_off or spread_off:
+        raise RuntimeError(
+            f"中间价或价差读回异常: price={row['price']} spread_bps={row['spread_bps']}"
+        )
+    quote_ns = to_ns(pd.Timestamp(row["exchange_ts"]))
+    if quote_ns != int(exchange.value):
+        raise RuntimeError(f"买卖一价纳秒时间戳丢了: 写入 {int(exchange.value)} 读回 {quote_ns}")
+    log.info("ClickHouse 行情：K 线、逐笔和买卖一价批量写入后按标的读回，纳秒时间戳保持不变")
 
 
 def _factors() -> None:

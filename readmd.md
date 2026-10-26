@@ -32,3 +32,8 @@ dataprice.market：ClickHouse 的 K 线和逐笔。缓冲满了会拒绝继续�
 dataprice.factors：ArcticDB 因子面板。factor_xs 是一个因子、多标的；factor_ts 是一个标的、多因子。write 返回版本号，回测要用这个版本号或写入时刻做 as_of。
 dataprice.ledger：账户、资金流水、持仓、风控限额、订单、成交、策略参数和角色。
 行情表按 Asia/Shanghai 的月份分区，排序键是周期、标的、交易所时间。交易所时间、本地接收时间、入库时间分开存。财务类因子的索引要用公告变得可知的时间。
+
+
+## 维护
+
+机器重启后，两个数据库容器会自己起来，已经写入 market.quotes 的数据还在。行情进程不会跟着起来，需要再执行一次 make feed，新价格才会继续写入。要让行情也跟着开机拉起，在本机用进程管理器托管 uv run dataprice feed 即可，并让它在 make up 之后启动。ClickHouse 只监听 127.0.0.1:8123，本机进程可以直接连。

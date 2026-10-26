@@ -10,6 +10,7 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.6",
     "python-dotenv>=1.0",
+    "websockets>=13",
 ]
 
 [project.scripts]
