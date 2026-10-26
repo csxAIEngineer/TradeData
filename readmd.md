@@ -43,6 +43,8 @@ uv run dataprice backtest --symbol BTC-USDT --months 24
 
 `uv run dataprice backtest --regime` 在评估候选上再要求大约三天的 4 小时效率比至少 0.25。`uv run dataprice backtest --trend-regime` 再加上「4 小时偏多只做多、偏空只做空、中性不做」。评估候选本来就要求 4 小时偏向和方向一致，所以这两条在这条候选上是同一套成交。留出样本的多空都还在亏。说明写在 `doc/ict_smc_regime.md`。
 
+`uv run dataprice backtest --grid` 只在同一条 4 小时效率比低于 0.25 时做震荡网格，等于或高于 0.25 就空仓。网格用等高/等低当区间，没有成对水位就用最近上下沿。它有仓位上限、固定间距、收盘破位止损和库存浮亏停机，不改 `evaluated_params()`。费用仍是每边 5 个基点手续费和 2 个基点不利滑点。说明在 `doc/grid_chop.md`。
+
 代码按层分开：
 
 dataprice.hotpath：内存里的持仓、额度和出站队列。evaluate / apply_fill 没有数据库调用。

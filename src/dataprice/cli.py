@@ -50,6 +50,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="猴市不做；4 小时偏多只做多，偏空只做空，中性不做",
     )
+    backtest.add_argument(
+        "--grid",
+        action="store_true",
+        help="只在 4 小时效率比低于 0.25 时做震荡网格，不跑趋势候选",
+    )
     args = parser.parse_args(argv)
     if args.command == "bootstrap":
         from dataprice.bootstrap import bootstrap
@@ -106,11 +111,28 @@ def main(argv: list[str] | None = None) -> None:
         )
         from dataprice.timeutil import UTC
 
-        chosen = [name for name in ("baseline", "flow", "regime", "trend_regime") if getattr(args, name)]
+        chosen = [name for name in ("baseline", "flow", "regime", "trend_regime", "grid") if getattr(args, name)]
         if len(chosen) > 1:
-            parser.error("--baseline、--flow、--regime、--trend-regime 只能选一个")
+            parser.error("--baseline、--flow、--regime、--trend-regime、--grid 只能选一个")
         end = datetime.now(UTC)
         start = end - timedelta(days=args.months * 30)
+        if args.grid:
+            from dataprice.strategy.grid import GridParams, format_grid_report, run_stored_grid
+
+            grid_params = GridParams(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
+            try:
+                grid_result, bars_30, bars_60 = run_stored_grid(
+                    symbol=args.symbol,
+                    start=start,
+                    end=end,
+                    params=grid_params,
+                )
+            except RuntimeError as exc:
+                parser.error(str(exc))
+            logging.info("%s 30m %s 根，60m %s 根", args.symbol, bars_30, bars_60)
+            for line in format_grid_report(grid_result, grid_params).splitlines():
+                logging.info("%s", line)
+            return
         if args.baseline:
             params = StrategyParams()
         elif args.flow:
