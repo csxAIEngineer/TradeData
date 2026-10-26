@@ -12,8 +12,15 @@ from dataprice.strategy.regime import (
     efficiency_asof,
     efficiency_ratio,
     regime_allows,
+    trend_side_allows,
 )
-from dataprice.strategy.signals import StrategyParams, entry_signals, evaluated_params, regime_params
+from dataprice.strategy.signals import (
+    StrategyParams,
+    entry_signals,
+    evaluated_params,
+    regime_params,
+    trend_regime_params,
+)
 
 UTC = timezone.utc
 T0 = datetime(2026, 1, 6, 8, 0, tzinfo=UTC)
@@ -75,6 +82,138 @@ def test_regime_profile_keeps_candidate_p_and_adds_the_train_lock():
     assert params.er_bars == 18
     assert params.skip_sessions == ()
     assert base.min_er is None
+
+
+def test_trend_side_buys_only_in_a_bull_4h_and_sells_only_in_a_bear_4h():
+    assert trend_side_allows("bull", "bull") is True
+    assert trend_side_allows("bull", "bear") is False
+    assert trend_side_allows("bull", "neutral") is False
+    assert trend_side_allows("bull", None) is False
+    assert trend_side_allows("bear", "bear") is True
+    assert trend_side_allows("bear", "bull") is False
+    assert trend_side_allows("bear", "neutral") is False
+
+
+def test_chop_and_4h_direction_gate_the_entry():
+    candles = _candles(_long_rows())
+    bull = tuple("bull" for _ in candles)
+    bear = tuple("bear" for _ in candles)
+    neutral = tuple("neutral" for _ in candles)
+    sell_side = Level("eql", "sell", 98.0, 0)
+    buy_side = Level("eqh", "buy", 112.0, 0)
+    liquidity = LiquidityMap((sell_side, buy_side), (Sweep(5, "sell", sell_side, 97.0),))
+    zones = find_zones(candles)
+    params = StrategyParams(min_er=0.25, trend_side=True)
+    trending = tuple(0.8 for _ in candles)
+    chopped = tuple(0.1 for _ in candles)
+    bought = entry_signals(
+        candles,
+        bias_30=bull,
+        bias_1h=bull,
+        liquidity=liquidity,
+        zones=zones,
+        params=params,
+        bias_4h=bull,
+        er_at=trending,
+    )
+    assert len(bought) == 1
+    assert bought[0].side == "buy"
+    assert (
+        entry_signals(
+            candles,
+            bias_30=bull,
+            bias_1h=bull,
+            liquidity=liquidity,
+            zones=zones,
+            params=params,
+            bias_4h=bear,
+            er_at=trending,
+        )
+        == []
+    )
+    assert (
+        entry_signals(
+            candles,
+            bias_30=bull,
+            bias_1h=bull,
+            liquidity=liquidity,
+            zones=zones,
+            params=params,
+            bias_4h=neutral,
+            er_at=trending,
+        )
+        == []
+    )
+    assert (
+        entry_signals(
+            candles,
+            bias_30=bull,
+            bias_1h=bull,
+            liquidity=liquidity,
+            zones=zones,
+            params=params,
+            bias_4h=bull,
+            er_at=chopped,
+        )
+        == []
+    )
+    with pytest.raises(ValueError, match="4 小时偏向"):
+        entry_signals(
+            candles,
+            bias_30=bull,
+            bias_1h=bull,
+            liquidity=liquidity,
+            zones=zones,
+            params=params,
+            er_at=trending,
+        )
+
+
+def test_down_market_allows_the_short_and_blocks_it_in_an_up_market():
+    candles = _candles(_short_rows())
+    bear = tuple("bear" for _ in candles)
+    bull = tuple("bull" for _ in candles)
+    buy_side = Level("eqh", "buy", 102.0, 0)
+    sell_side = Level("eql", "sell", 88.0, 0)
+    liquidity = LiquidityMap((buy_side, sell_side), (Sweep(5, "buy", buy_side, 103.0),))
+    zones = find_zones(candles)
+    params = StrategyParams(min_er=0.25, trend_side=True)
+    trending = tuple(0.8 for _ in candles)
+    sold = entry_signals(
+        candles,
+        bias_30=bear,
+        bias_1h=bear,
+        liquidity=liquidity,
+        zones=zones,
+        params=params,
+        bias_4h=bear,
+        er_at=trending,
+    )
+    assert len(sold) == 1
+    assert sold[0].side == "sell"
+    assert (
+        entry_signals(
+            candles,
+            bias_30=bear,
+            bias_1h=bear,
+            liquidity=liquidity,
+            zones=zones,
+            params=params,
+            bias_4h=bull,
+            er_at=trending,
+        )
+        == []
+    )
+
+
+def test_trend_regime_profile_stacks_chop_and_direction_on_p():
+    params = trend_regime_params()
+    assert params.min_er == 0.25
+    assert params.er_bars == 18
+    assert params.trend_side is True
+    assert params.confirm_4h is True
+    assert params.liquidity_kinds == evaluated_params().liquidity_kinds
+    assert regime_params().trend_side is False
 
 
 def test_entry_can_skip_the_session_or_a_flat_4h_path():
@@ -139,6 +278,11 @@ def _candles(rows, start=T0, minutes=30):
         Candle(start + timedelta(minutes=minutes * index), open_, high, low, close, 1.0)
         for index, (open_, high, low, close) in enumerate(rows)
     ]
+
+
+def _short_rows():
+    """做多夹具的价格反射。扫买侧流动性，再回到看空失衡。"""
+    return [(200 - open_, 200 - low, 200 - high, 200 - close) for open_, high, low, close in _long_rows()]
 
 
 def _long_rows():

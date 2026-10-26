@@ -9,6 +9,7 @@ from dataprice.strategy.signals import (
     flow_params,
     generate_signals,
     regime_params,
+    trend_regime_params,
 )
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "format_report",
     "generate_signals",
     "run_backtest",
+    "trend_regime_params",
     "simulate",
 ]

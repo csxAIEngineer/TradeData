@@ -107,6 +107,18 @@ def atr_percentile(
     return tuple(out)
 
 
+def trend_side_allows(trade_bias: str, bias_4h: str | None) -> bool:
+    """不是猴市时，只顺着已经收盘的 4 小时结构做。
+
+    偏多只做多，偏空只做空。偏向还是 ``neutral``，或者还没有 4 小时结构，就不做。
+    """
+    if trade_bias == "bull":
+        return bias_4h == "bull"
+    if trade_bias == "bear":
+        return bias_4h == "bear"
+    return False
+
+
 def regime_allows(
     ts: datetime,
     *,

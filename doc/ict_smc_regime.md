@@ -4,7 +4,7 @@ Same book as `doc/ict_smc_evaluation.md`. Structural candidate P is unchanged: `
 
 The Binance taker-flow gate is not part of this comparison.
 
-`make backtest` still runs P. `uv run dataprice backtest --regime` runs `regime_params()`.
+`make backtest` still runs P. `uv run dataprice backtest --regime` runs the efficiency gate. `uv run dataprice backtest --trend-regime` runs that gate plus an explicit 4h side rule.
 
 ## Why the holdout loses
 
@@ -89,3 +89,30 @@ make test
 ```
 
 `--regime` cannot be combined with `--baseline` or `--flow`.
+
+## Chop plus 4h direction
+
+`trend_regime_params()` is the efficiency gate with one more rule, using only 4h information that has already closed:
+
+- Efficiency over the last 18 closed 4h returns below 0.25: no trade. That is the chop case.
+- Otherwise, 4h structure bias `bull`: buy only.
+- 4h structure bias `bear`: sell only.
+- 4h structure bias `neutral`: no trade.
+
+Candidate P already requires the 30m, 1h, and 4h biases to match the trade, so a long is already refused unless the closed 4h bias is bull, and a short is already refused unless it is bear. Neutral 4h already produces no entry. On this candidate the extra side rule does not change a fill. The backtest is the same trade list as `--regime`.
+
+| Sample, 5 bps + 2 bps | P | Efficiency only | Chop + 4h side |
+| --- | ---: | ---: | ---: |
+| Train trades / PnL / PF | 97 / +156.67 / 1.47 | 41 / +164.91 / 2.54 | 41 / +164.91 / 2.54 |
+| Train buys | 37 / +98.87 | 17 / +53.65 | 17 / +53.65 |
+| Train sells | 60 / +57.80 | 24 / +111.26 | 24 / +111.26 |
+| Holdout trades / PnL / PF | 63 / −92.78 / 0.54 | 24 / −43.73 / 0.42 | 24 / −43.73 / 0.42 |
+| Holdout buys | 34 / −34.36 | 15 / −18.34 | 15 / −18.34 |
+| Holdout sells | 29 / −58.42 | 9 / −25.39 | 9 / −25.39 |
+| Full window trades / PnL / PF | 160 / +63.89 / 1.12 | 65 / +121.18 / 1.66 | 65 / +121.18 / 1.66 |
+
+The rally still loses on both sides. Holdout longs are −18.34 and holdout shorts are −25.39 under the combined rule, the same as the efficiency gate alone. Restricting the book to the 4h direction was already in P, so it does not stop that bleeding. Average R on the holdout stays −0.33.
+
+```shell
+uv run dataprice backtest --trend-regime --symbol BTC-USDT --months 24
+```

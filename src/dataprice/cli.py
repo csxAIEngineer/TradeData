@@ -45,6 +45,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="在评估候选上再要求大约三天的 4 小时效率比至少 0.25",
     )
+    backtest.add_argument(
+        "--trend-regime",
+        action="store_true",
+        help="猴市不做；4 小时偏多只做多，偏空只做空，中性不做",
+    )
     args = parser.parse_args(argv)
     if args.command == "bootstrap":
         from dataprice.bootstrap import bootstrap
@@ -97,12 +102,13 @@ def main(argv: list[str] | None = None) -> None:
             evaluated_params,
             flow_params,
             regime_params,
+            trend_regime_params,
         )
         from dataprice.timeutil import UTC
 
-        chosen = [name for name in ("baseline", "flow", "regime") if getattr(args, name)]
+        chosen = [name for name in ("baseline", "flow", "regime", "trend_regime") if getattr(args, name)]
         if len(chosen) > 1:
-            parser.error("--baseline、--flow、--regime 只能选一个")
+            parser.error("--baseline、--flow、--regime、--trend-regime 只能选一个")
         end = datetime.now(UTC)
         start = end - timedelta(days=args.months * 30)
         if args.baseline:
@@ -111,6 +117,8 @@ def main(argv: list[str] | None = None) -> None:
             params = flow_params()
         elif args.regime:
             params = regime_params()
+        elif args.trend_regime:
+            params = trend_regime_params()
         else:
             params = evaluated_params()
         try:

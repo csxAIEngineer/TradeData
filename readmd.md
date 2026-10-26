@@ -41,7 +41,7 @@ uv run dataprice backtest --symbol BTC-USDT --months 24
 
 主动成交过滤要先 `make flow-backfill`，再 `uv run dataprice backtest --flow`。OKX 公开接口没有这条回测窗口的历史盘口和爆仓明细，入库的是 Binance USD-M 30 分钟主动买卖量。对照写在 `doc/ict_smc_flow.md`。
 
-`uv run dataprice backtest --regime` 在评估候选上再要求大约三天的 4 小时效率比至少 0.25。这个过滤是在 2026-03 之前的训练窗口里选定的。留出样本仍然亏损，说明写在 `doc/ict_smc_regime.md`。
+`uv run dataprice backtest --regime` 在评估候选上再要求大约三天的 4 小时效率比至少 0.25。`uv run dataprice backtest --trend-regime` 再加上「4 小时偏多只做多、偏空只做空、中性不做」。评估候选本来就要求 4 小时偏向和方向一致，所以这两条在这条候选上是同一套成交。留出样本的多空都还在亏。说明写在 `doc/ict_smc_regime.md`。
 
 代码按层分开：
 

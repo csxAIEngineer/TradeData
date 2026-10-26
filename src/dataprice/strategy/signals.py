@@ -40,7 +40,13 @@ from dataprice.contracts import Side
 from dataprice.factors.frame import validate_panel
 from dataprice.strategy.candles import Candle, aggregate_candles, assert_sorted, bar_delta
 from dataprice.strategy.flow import TakerBar, aggressor_confirms, index_flow, open_ms
-from dataprice.strategy.regime import SESSIONS, atr_percentile, efficiency_asof, regime_allows
+from dataprice.strategy.regime import (
+    SESSIONS,
+    atr_percentile,
+    efficiency_asof,
+    regime_allows,
+    trend_side_allows,
+)
 from dataprice.strategy.imbalance import Zone, find_zones
 from dataprice.strategy.liquidity import Level, LiquidityMap, Sweep, map_liquidity
 from dataprice.strategy.structure import structure_path
@@ -85,6 +91,7 @@ class StrategyParams:
     max_atr_pct: float | None = None
     atr_length: int = 14
     atr_lookback: int = 960
+    trend_side: bool = False
 
     def __post_init__(self) -> None:
         if self.wing < 1:
@@ -187,6 +194,17 @@ def regime_params() -> StrategyParams:
     return replace(evaluated_params(), min_er=0.25, er_bars=18)
 
 
+def trend_regime_params() -> StrategyParams:
+    """评估候选，再加上猴市过滤和 4 小时方向。
+
+    大约三天的 4 小时效率比低于 0.25 不做。其余时候只顺着已经收盘的
+    4 小时结构：偏多只做多，偏空只做空，``neutral`` 不做。
+    ``evaluated_params`` 本身已经要求 4 小时偏向和交易方向一致，
+    所以在这条候选上，方向条件和 ``regime_params`` 是同一套成交。
+    """
+    return replace(regime_params(), trend_side=True)
+
+
 def flow_params(min_imbalance: float = 0.0) -> StrategyParams:
     """在评估候选上再要求扫流动性那根的主动成交同向。
 
@@ -215,9 +233,9 @@ def generate_signals(
     bias_4h: tuple[str, ...] | None = None
     er_at: tuple[float | None, ...] | None = None
     candles_4h: tuple[Candle, ...] | list[Candle] | None = None
-    if params.confirm_4h or params.min_er is not None:
+    if params.confirm_4h or params.min_er is not None or params.trend_side:
         candles_4h = aggregate_candles(candles_60, "4h")
-    if params.confirm_4h:
+    if params.confirm_4h or params.trend_side:
         assert candles_4h is not None
         path_4h = structure_path(candles_4h, params.wing)
         bias_4h = bias_asof(candles_4h, path_4h.bias, "4h", candles_30, "30m")
@@ -304,6 +322,8 @@ def entry_signals(
         raise ValueError("ATR 分位长度必须和 30m K 线一致")
     if len(bias_30) != len(candles) or len(bias_1h) != len(candles):
         raise ValueError("bias 长度必须和 30m K 线一致")
+    if params.trend_side and bias_4h is None:
+        raise ValueError("设置了顺势方向，但没有传入 4 小时偏向")
     if bias_4h is not None and len(bias_4h) != len(candles):
         raise ValueError("4h bias 长度必须和 30m K 线一致")
     if structure_age is not None and len(structure_age) != len(candles):
@@ -391,7 +411,13 @@ def _from_sweep(
         and zone.kind in params.zone_kinds
         and zone.bias == trade_bias
         and sweep.index < zone.index <= sweep.index + params.sweep_window
-        and _aligned(bias_30, bias_1h, zone.index, trade_bias, bias_4h)
+        and _aligned(
+            bias_30,
+            bias_1h,
+            zone.index,
+            trade_bias,
+            bias_4h if params.confirm_4h else None,
+        )
     ]
     if not candidates:
         return None
@@ -415,7 +441,13 @@ def _from_sweep(
                 continue
             if _touches(candle, zone) and _holds(candle, zone):
                 ready.append(zone)
-        if not ready or not _aligned(bias_30, bias_1h, index, trade_bias, bias_4h):
+        if not ready or not _aligned(
+            bias_30,
+            bias_1h,
+            index,
+            trade_bias,
+            bias_4h if params.confirm_4h else None,
+        ):
             continue
         if not _structure_fresh(structure_age, index, trade_bias, params):
             continue
@@ -427,6 +459,11 @@ def _from_sweep(
             atr_pct=None if atr_pct_at is None else atr_pct_at[index],
             min_atr_pct=params.min_atr_pct,
             max_atr_pct=params.max_atr_pct,
+        ):
+            continue
+        if params.trend_side and not trend_side_allows(
+            trade_bias,
+            None if bias_4h is None else bias_4h[index],
         ):
             continue
         ready.sort(key=lambda zone: (0 if zone.kind == "fvg" else 1, zone.index))
