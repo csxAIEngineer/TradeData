@@ -116,3 +116,5 @@ The rally still loses on both sides. Holdout longs are −18.34 and holdout shor
 ```shell
 uv run dataprice backtest --trend-regime --symbol BTC-USDT --months 24
 ```
+
+A later pass applies that same efficiency floor to shorts only, and records why a closed daily bear was not locked. See `doc/ict_smc_short.md`.

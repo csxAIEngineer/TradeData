@@ -23,6 +23,9 @@
 样本不够就放过这次进场。
 ``long_min_sweep_clv`` 只约束做多：扫卖侧那根的收盘要落在整根高低区间的上沿，
 刺破后买盘把价格收回来。收在低点附近的扫流动性不做。这个条件不改变做空。
+``short_daily_bias``、``short_min_er``、``short_net_down`` 只否决空头：
+已经收盘的日线结构要是 bear，空头这段高周期路径不能是猴市，
+需要的话净变动还得是下跌。多头信号照原样保留。样本不够就否决这笔空头。
 ``exit_on_bias_flip`` 为假时，1 小时偏向翻转不作为出场，只留止损和止盈。
 ``breakeven_at_r`` 在价格先走出这么多 R 之后，下一根把止损抬到进场价。
 
@@ -48,7 +51,9 @@ from dataprice.strategy.regime import (
     efficiency_asof,
     long_sweep_allows,
     regime_allows,
+    short_market_allows,
     trend_side_allows,
+    window_net_asof,
 )
 from dataprice.strategy.imbalance import Zone, find_zones
 from dataprice.strategy.liquidity import Level, LiquidityMap, Sweep, map_liquidity
@@ -96,6 +101,11 @@ class StrategyParams:
     atr_lookback: int = 960
     trend_side: bool = False
     long_min_sweep_clv: float | None = None
+    short_daily_bias: bool = False
+    short_min_er: float | None = None
+    short_er_bars: int = 18
+    short_er_freq: Literal["4h", "1d"] = "4h"
+    short_net_down: bool = False
 
     def __post_init__(self) -> None:
         if self.wing < 1:
@@ -145,6 +155,12 @@ class StrategyParams:
             raise ValueError("ATR 窗口必须 >= 2")
         if self.long_min_sweep_clv is not None and not 0 < self.long_min_sweep_clv <= 1:
             raise ValueError("long_min_sweep_clv 必须在 0 和 1 之间")
+        if self.short_min_er is not None and not 0 < self.short_min_er <= 1:
+            raise ValueError("short_min_er 必须在 0 和 1 之间")
+        if self.short_er_bars < 2:
+            raise ValueError("short_er_bars 必须 >= 2")
+        if self.short_er_freq not in ("4h", "1d"):
+            raise ValueError("short_er_freq 只能是 4h 或 1d")
 
 
 @dataclass(frozen=True)
@@ -222,6 +238,17 @@ def long_params() -> StrategyParams:
     return replace(evaluated_params(), sides=("buy",), long_min_sweep_clv=0.7)
 
 
+def short_regime_params() -> StrategyParams:
+    """评估候选，只对空头加上训练窗口锁定的效率比。
+
+    最近 18 根已经收盘的 4 小时 K 线，效率比至少 0.25。多头不看这道门槛。
+    日线结构偏空，以及「日线偏空再加效率比」，训练里的空头是亏的，
+    没有通过笔数和盈亏门槛。留出样本没有参与这个选择。
+    见 ``doc/ict_smc_short.md``。
+    """
+    return replace(evaluated_params(), short_min_er=0.25, short_er_bars=18)
+
+
 def flow_params(min_imbalance: float = 0.0) -> StrategyParams:
     """在评估候选上再要求扫流动性那根的主动成交同向。
 
@@ -249,8 +276,15 @@ def generate_signals(
     structure_age = higher_event_age(candles_60, path_60.events, "60m", candles_30, "30m")
     bias_4h: tuple[str, ...] | None = None
     er_at: tuple[float | None, ...] | None = None
+    bias_1d: tuple[str, ...] | None = None
+    short_er_at: tuple[float | None, ...] | None = None
+    short_net_at: tuple[float | None, ...] | None = None
     candles_4h: tuple[Candle, ...] | list[Candle] | None = None
-    if params.confirm_4h or params.min_er is not None or params.trend_side:
+    short_path = params.short_min_er is not None or params.short_net_down
+    need_4h = params.confirm_4h or params.min_er is not None or params.trend_side
+    if short_path and params.short_er_freq == "4h":
+        need_4h = True
+    if need_4h:
         candles_4h = aggregate_candles(candles_60, "4h")
     if params.confirm_4h or params.trend_side:
         assert candles_4h is not None
@@ -259,6 +293,39 @@ def generate_signals(
     if params.min_er is not None:
         assert candles_4h is not None
         er_at = efficiency_asof(candles_4h, "4h", candles_30, "30m", params.er_bars)
+    candles_1d: tuple[Candle, ...] | list[Candle] | None = None
+    if params.short_daily_bias or (short_path and params.short_er_freq == "1d"):
+        candles_1d = aggregate_candles(candles_60, "1d")
+    if params.short_daily_bias:
+        assert candles_1d is not None
+        path_1d = structure_path(candles_1d, params.wing)
+        bias_1d = bias_asof(candles_1d, path_1d.bias, "1d", candles_30, "30m")
+    if short_path:
+        if params.short_er_freq == "4h":
+            assert candles_4h is not None
+            short_source, short_freq = candles_4h, "4h"
+        else:
+            assert candles_1d is not None
+            short_source, short_freq = candles_1d, "1d"
+        if params.short_min_er is not None:
+            if short_freq == "4h" and er_at is not None and params.er_bars == params.short_er_bars:
+                short_er_at = er_at
+            else:
+                short_er_at = efficiency_asof(
+                    short_source,
+                    short_freq,
+                    candles_30,
+                    "30m",
+                    params.short_er_bars,
+                )
+        if params.short_net_down:
+            short_net_at = window_net_asof(
+                short_source,
+                short_freq,
+                candles_30,
+                "30m",
+                params.short_er_bars,
+            )
     atr_pct_at = (
         atr_percentile(
             candles_30,
@@ -282,6 +349,9 @@ def generate_signals(
         flow_at=_flow_index(flow, params),
         er_at=er_at,
         atr_pct_at=atr_pct_at,
+        bias_1d=bias_1d,
+        short_er_at=short_er_at,
+        short_net_at=short_net_at,
     )
     return SignalBook(
         candles=tuple(candles_30),
@@ -325,6 +395,9 @@ def entry_signals(
     flow_at: Mapping[int, TakerBar] | None = None,
     er_at: Sequence[float | None] | None = None,
     atr_pct_at: Sequence[float | None] | None = None,
+    bias_1d: Sequence[str] | None = None,
+    short_er_at: Sequence[float | None] | None = None,
+    short_net_at: Sequence[float | None] | None = None,
 ) -> list[Signal]:
     params = params or StrategyParams()
     if params.min_flow_imbalance is not None and flow_at is None:
@@ -345,6 +418,18 @@ def entry_signals(
         raise ValueError("4h bias 长度必须和 30m K 线一致")
     if structure_age is not None and len(structure_age) != len(candles):
         raise ValueError("结构年龄长度必须和 30m K 线一致")
+    if params.short_daily_bias and bias_1d is None:
+        raise ValueError("设置了日线空头确认，但没有传入日线偏向")
+    if bias_1d is not None and len(bias_1d) != len(candles):
+        raise ValueError("日线 bias 长度必须和 30m K 线一致")
+    if params.short_min_er is not None and short_er_at is None:
+        raise ValueError("设置了空头效率比过滤，但没有传入效率比")
+    if short_er_at is not None and len(short_er_at) != len(candles):
+        raise ValueError("空头效率比长度必须和 30m K 线一致")
+    if params.short_net_down and short_net_at is None:
+        raise ValueError("设置了空头下跌确认，但没有传入这段路径的净变动")
+    if short_net_at is not None and len(short_net_at) != len(candles):
+        raise ValueError("空头净变动长度必须和 30m K 线一致")
     used_zones: set[int] = set()
     used_bars: set[int] = set()
     signals: list[Signal] = []
@@ -369,6 +454,20 @@ def entry_signals(
             continue
         signals.append(signal)
         used_bars.add(signal.index)
+    if _short_gate_active(params):
+        signals = [
+            signal
+            for signal in signals
+            if signal.side != "sell"
+            or short_market_allows(
+                daily_bias=None if bias_1d is None else bias_1d[signal.index],
+                require_daily_bear=params.short_daily_bias,
+                er=None if short_er_at is None else short_er_at[signal.index],
+                min_er=params.short_min_er,
+                net=None if short_net_at is None else short_net_at[signal.index],
+                require_down=params.short_net_down,
+            )
+        ]
     return signals
 
 
@@ -689,6 +788,10 @@ def _bias_code(value: str) -> float:
     if value == "bear":
         return -1.0
     return 0.0
+
+
+def _short_gate_active(params: StrategyParams) -> bool:
+    return bool(params.short_daily_bias or params.short_min_er is not None or params.short_net_down)
 
 
 def _flow_index(

@@ -21,6 +21,7 @@ from dataprice.strategy.signals import (
     generate_signals,
     long_params,
     regime_params,
+    short_regime_params,
     trend_regime_params,
 )
 
@@ -39,6 +40,7 @@ __all__ = [
     "grid_windows",
     "long_params",
     "regime_params",
+    "short_regime_params",
     "run_backtest",
     "run_grid",
     "simulate",

@@ -65,6 +65,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="同一套规则只保留多头。可以和其它画像一起用，--long 本身已经只做多",
     )
+    backtest.add_argument(
+        "--short-regime",
+        action="store_true",
+        help="只对空头要求大约三天的 4 小时效率比至少 0.25，多头仍是评估候选",
+    )
     args = parser.parse_args(argv)
     if args.command == "bootstrap":
         from dataprice.bootstrap import bootstrap
@@ -119,17 +124,20 @@ def main(argv: list[str] | None = None) -> None:
             flow_params,
             long_params,
             regime_params,
+            short_regime_params,
             trend_regime_params,
         )
         from dataprice.timeutil import UTC
 
         chosen = [
             name
-            for name in ("baseline", "flow", "regime", "trend_regime", "grid", "long")
+            for name in ("baseline", "flow", "regime", "trend_regime", "grid", "long", "short_regime")
             if getattr(args, name)
         ]
         if len(chosen) > 1:
-            parser.error("--baseline、--flow、--regime、--trend-regime、--grid、--long 只能选一个")
+            parser.error(
+                "--baseline、--flow、--regime、--trend-regime、--grid、--long、--short-regime 只能选一个"
+            )
         end = datetime.now(UTC)
         start = end - timedelta(days=args.months * 30)
         if args.grid:
@@ -159,6 +167,8 @@ def main(argv: list[str] | None = None) -> None:
             params = trend_regime_params()
         elif args.long:
             params = long_params()
+        elif args.short_regime:
+            params = short_regime_params()
         else:
             params = evaluated_params()
         if args.buy_only:
