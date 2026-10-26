@@ -18,6 +18,9 @@
 限制止损宽度和追价、要求缺口够大、用 4 小时结构确认 1 小时偏向。
 ``min_flow_imbalance`` 打开后，扫流动性那根还必须有同向的主动成交：
 扫卖侧要主动卖出占优，扫买侧要主动买入占优。没有这根的成交拆分就不做。
+``skip_sessions``、``min_er``、``min_atr_pct`` / ``max_atr_pct`` 是进场这根的
+行情过滤：时段、已经收盘的 4 小时效率比、30 分钟 ATR 在更早样本里的分位。
+样本不够就放过这次进场。
 ``exit_on_bias_flip`` 为假时，1 小时偏向翻转不作为出场，只留止损和止盈。
 ``breakeven_at_r`` 在价格先走出这么多 R 之后，下一根把止损抬到进场价。
 
@@ -37,6 +40,7 @@ from dataprice.contracts import Side
 from dataprice.factors.frame import validate_panel
 from dataprice.strategy.candles import Candle, aggregate_candles, assert_sorted, bar_delta
 from dataprice.strategy.flow import TakerBar, aggressor_confirms, index_flow, open_ms
+from dataprice.strategy.regime import SESSIONS, atr_percentile, efficiency_asof, regime_allows
 from dataprice.strategy.imbalance import Zone, find_zones
 from dataprice.strategy.liquidity import Level, LiquidityMap, Sweep, map_liquidity
 from dataprice.strategy.structure import structure_path
@@ -74,6 +78,13 @@ class StrategyParams:
     max_structure_age: int | None = None
     structure_kinds: tuple[str, ...] = ("bos", "choch")
     min_flow_imbalance: float | None = None
+    skip_sessions: tuple[str, ...] = ()
+    min_er: float | None = None
+    er_bars: int = 6
+    min_atr_pct: float | None = None
+    max_atr_pct: float | None = None
+    atr_length: int = 14
+    atr_lookback: int = 960
 
     def __post_init__(self) -> None:
         if self.wing < 1:
@@ -104,6 +115,23 @@ class StrategyParams:
             raise ValueError("structure_kinds 不能是空的")
         if self.min_flow_imbalance is not None and not 0 <= self.min_flow_imbalance <= 1:
             raise ValueError("min_flow_imbalance 必须在 0 和 1 之间")
+        if any(name not in SESSIONS for name in self.skip_sessions):
+            raise ValueError("skip_sessions 只能是 asia、london、new_york、off")
+        if self.min_er is not None and not 0 < self.min_er <= 1:
+            raise ValueError("min_er 必须在 0 和 1 之间")
+        if self.er_bars < 2:
+            raise ValueError("er_bars 必须 >= 2")
+        for name, bound in (("min_atr_pct", self.min_atr_pct), ("max_atr_pct", self.max_atr_pct)):
+            if bound is not None and not 0 <= bound <= 1:
+                raise ValueError(f"{name} 必须在 0 和 1 之间")
+        if (
+            self.min_atr_pct is not None
+            and self.max_atr_pct is not None
+            and self.min_atr_pct > self.max_atr_pct
+        ):
+            raise ValueError("min_atr_pct 不能大于 max_atr_pct")
+        if self.atr_length < 2 or self.atr_lookback < 2:
+            raise ValueError("ATR 窗口必须 >= 2")
 
 
 @dataclass(frozen=True)
@@ -149,6 +177,16 @@ def evaluated_params() -> StrategyParams:
     )
 
 
+def regime_params() -> StrategyParams:
+    """评估候选，再加上训练窗口里锁定的行情过滤。
+
+    最近 18 根已经收盘的 4 小时 K 线，效率比至少 0.25。
+    也就是大约三天的净位移要占到路径的四分之一，不在来回里做扫流动性。
+    留出样本没有参与这个选择。见 ``doc/ict_smc_regime.md``。
+    """
+    return replace(evaluated_params(), min_er=0.25, er_bars=18)
+
+
 def flow_params(min_imbalance: float = 0.0) -> StrategyParams:
     """在评估候选上再要求扫流动性那根的主动成交同向。
 
@@ -175,10 +213,26 @@ def generate_signals(
     bias_1h = bias_asof(candles_60, path_60.bias, "60m", candles_30, "30m")
     structure_age = higher_event_age(candles_60, path_60.events, "60m", candles_30, "30m")
     bias_4h: tuple[str, ...] | None = None
-    if params.confirm_4h:
+    er_at: tuple[float | None, ...] | None = None
+    candles_4h: tuple[Candle, ...] | list[Candle] | None = None
+    if params.confirm_4h or params.min_er is not None:
         candles_4h = aggregate_candles(candles_60, "4h")
+    if params.confirm_4h:
+        assert candles_4h is not None
         path_4h = structure_path(candles_4h, params.wing)
         bias_4h = bias_asof(candles_4h, path_4h.bias, "4h", candles_30, "30m")
+    if params.min_er is not None:
+        assert candles_4h is not None
+        er_at = efficiency_asof(candles_4h, "4h", candles_30, "30m", params.er_bars)
+    atr_pct_at = (
+        atr_percentile(
+            candles_30,
+            length=params.atr_length,
+            lookback=params.atr_lookback,
+        )
+        if params.min_atr_pct is not None or params.max_atr_pct is not None
+        else None
+    )
     liquidity = map_liquidity(candles_30, path_30.swings, _liquidity_params(params))
     zones = find_zones(candles_30, ob_lookback=params.ob_lookback)
     signals = entry_signals(
@@ -191,6 +245,8 @@ def generate_signals(
         bias_4h=bias_4h,
         structure_age=structure_age,
         flow_at=_flow_index(flow, params),
+        er_at=er_at,
+        atr_pct_at=atr_pct_at,
     )
     return SignalBook(
         candles=tuple(candles_30),
@@ -232,10 +288,20 @@ def entry_signals(
     bias_4h: Sequence[str] | None = None,
     structure_age: Sequence[tuple[str, str, int] | None] | None = None,
     flow_at: Mapping[int, TakerBar] | None = None,
+    er_at: Sequence[float | None] | None = None,
+    atr_pct_at: Sequence[float | None] | None = None,
 ) -> list[Signal]:
     params = params or StrategyParams()
     if params.min_flow_imbalance is not None and flow_at is None:
         raise ValueError("设置了主动成交过滤，但没有传入 taker flow")
+    if params.min_er is not None and er_at is None:
+        raise ValueError("设置了效率比过滤，但没有传入 4 小时效率比")
+    if er_at is not None and len(er_at) != len(candles):
+        raise ValueError("效率比长度必须和 30m K 线一致")
+    if (params.min_atr_pct is not None or params.max_atr_pct is not None) and atr_pct_at is None:
+        raise ValueError("设置了 ATR 分位过滤，但没有传入分位")
+    if atr_pct_at is not None and len(atr_pct_at) != len(candles):
+        raise ValueError("ATR 分位长度必须和 30m K 线一致")
     if len(bias_30) != len(candles) or len(bias_1h) != len(candles):
         raise ValueError("bias 长度必须和 30m K 线一致")
     if bias_4h is not None and len(bias_4h) != len(candles):
@@ -259,6 +325,8 @@ def entry_signals(
             bias_4h=bias_4h,
             structure_age=structure_age,
             flow_at=flow_at,
+            er_at=er_at,
+            atr_pct_at=atr_pct_at,
         )
         if signal is None or signal.index in used_bars:
             continue
@@ -302,6 +370,8 @@ def _from_sweep(
     bias_4h: Sequence[str] | None = None,
     structure_age: Sequence[tuple[str, str, int] | None] | None = None,
     flow_at: Mapping[int, TakerBar] | None = None,
+    er_at: Sequence[float | None] | None = None,
+    atr_pct_at: Sequence[float | None] | None = None,
 ) -> Signal | None:
     trade_bias: TradeBias = "bull" if sweep.side == "sell" else "bear"
     if params.min_flow_imbalance is not None:
@@ -348,6 +418,16 @@ def _from_sweep(
         if not ready or not _aligned(bias_30, bias_1h, index, trade_bias, bias_4h):
             continue
         if not _structure_fresh(structure_age, index, trade_bias, params):
+            continue
+        if not regime_allows(
+            candles[index].open_ts,
+            skip_sessions=params.skip_sessions,
+            er=None if er_at is None else er_at[index],
+            min_er=params.min_er,
+            atr_pct=None if atr_pct_at is None else atr_pct_at[index],
+            min_atr_pct=params.min_atr_pct,
+            max_atr_pct=params.max_atr_pct,
+        ):
             continue
         ready.sort(key=lambda zone: (0 if zone.kind == "fvg" else 1, zone.index))
         zone = ready[0]

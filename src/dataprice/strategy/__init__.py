@@ -8,6 +8,7 @@ from dataprice.strategy.signals import (
     evaluated_params,
     flow_params,
     generate_signals,
+    regime_params,
 )
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "StrategyParams",
     "evaluated_params",
     "flow_params",
+    "regime_params",
     "format_report",
     "generate_signals",
     "run_backtest",

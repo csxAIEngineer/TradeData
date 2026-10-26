@@ -40,6 +40,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="在评估候选上再要求扫流动性那根的主动成交同向",
     )
+    backtest.add_argument(
+        "--regime",
+        action="store_true",
+        help="在评估候选上再要求大约三天的 4 小时效率比至少 0.25",
+    )
     args = parser.parse_args(argv)
     if args.command == "bootstrap":
         from dataprice.bootstrap import bootstrap
@@ -87,17 +92,25 @@ def main(argv: list[str] | None = None) -> None:
         from datetime import datetime, timedelta
 
         from dataprice.strategy.backtest import format_report, run_stored_backtest
-        from dataprice.strategy.signals import StrategyParams, evaluated_params, flow_params
+        from dataprice.strategy.signals import (
+            StrategyParams,
+            evaluated_params,
+            flow_params,
+            regime_params,
+        )
         from dataprice.timeutil import UTC
 
-        if args.baseline and args.flow:
-            parser.error("--baseline 和 --flow 不能一起用")
+        chosen = [name for name in ("baseline", "flow", "regime") if getattr(args, name)]
+        if len(chosen) > 1:
+            parser.error("--baseline、--flow、--regime 只能选一个")
         end = datetime.now(UTC)
         start = end - timedelta(days=args.months * 30)
         if args.baseline:
             params = StrategyParams()
         elif args.flow:
             params = flow_params()
+        elif args.regime:
+            params = regime_params()
         else:
             params = evaluated_params()
         try:
