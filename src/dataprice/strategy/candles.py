@@ -11,14 +11,14 @@ import pandas as pd
 from dataprice.contracts import Bar
 from dataprice.timeutil import UTC, ensure_aware
 
-FREQ_MINUTES = {"30m": 30, "60m": 60, "4h": 240}
+FREQ_MINUTES = {"30m": 30, "60m": 60, "4h": 240, "1d": 1440}
 
 
 def bar_delta(freq: str) -> timedelta:
     try:
         minutes = FREQ_MINUTES[freq]
     except KeyError as exc:
-        raise ValueError(f"策略周期只支持 30m、60m 和 4h，收到 {freq}") from exc
+        raise ValueError(f"策略周期只支持 30m、60m、4h 和 1d，收到 {freq}") from exc
     return timedelta(minutes=minutes)
 
 

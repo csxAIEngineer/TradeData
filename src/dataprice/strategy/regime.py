@@ -59,6 +59,33 @@ def efficiency_asof(
     return tuple(out)
 
 
+def window_net_asof(
+    higher: Sequence[Candle],
+    higher_freq: str,
+    lower: Sequence[Candle],
+    lower_freq: str,
+    bars: int,
+) -> tuple[float | None, ...]:
+    """低周期收盘时，已经收盘的高周期窗口净变动（末减初）。不够样本就是 None。
+
+    窗口和 ``efficiency_asof`` 用同一段收盘价。净变动为负才是这段路径在下跌。
+    """
+    if bars < 2:
+        raise ValueError("bars 必须 >= 2")
+    closes_at = [candle.open_ts + bar_delta(higher_freq) for candle in higher]
+    out: list[float | None] = []
+    cursor = -1
+    for candle in lower:
+        known_at = candle.open_ts + bar_delta(lower_freq)
+        while cursor + 1 < len(higher) and closes_at[cursor + 1] <= known_at:
+            cursor += 1
+        if cursor < bars:
+            out.append(None)
+            continue
+        out.append(higher[cursor].close - higher[cursor - bars].close)
+    return tuple(out)
+
+
 def true_ranges(candles: Sequence[Candle]) -> list[float]:
     ranges: list[float] = []
     previous = None
@@ -105,6 +132,29 @@ def atr_percentile(
             continue
         out.append(sum(item <= current for item in sample) / len(sample))
     return tuple(out)
+
+
+def short_market_allows(
+    *,
+    daily_bias: str | None,
+    require_daily_bear: bool,
+    er: float | None,
+    min_er: float | None,
+    net: float | None,
+    require_down: bool,
+) -> bool:
+    """这一笔空头是否处在已经收盘的下跌市里。多头不走这里。
+
+    日线结构不是 bear、效率比低于门槛、或者这段路径的净变动不是下跌，都不做。
+    样本还不够（None）同样不做。三个条件都没开时直接通过。
+    """
+    if require_daily_bear and daily_bias != "bear":
+        return False
+    if min_er is not None and (er is None or er < min_er):
+        return False
+    if require_down and (net is None or net >= 0):
+        return False
+    return True
 
 
 def trend_side_allows(trade_bias: str, bias_4h: str | None) -> bool:
