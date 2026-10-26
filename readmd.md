@@ -20,15 +20,28 @@ make up          # 启动两个数据库
 make bootstrap   # 建表，并创建 ArcticDB library
 make health
 make smoke       # 三个存储各做一轮读写
+make backfill    # 从 OKX 拉 BTC-USDT 的 30m 和 60m（1 小时）写入 market.bars
+make backtest    # 用已入库 K 线跑 ICT + SMC 回测
 make test        # 不连数据库的单元测试
 make down        # 停止容器，数据卷保留
 ```
+
+历史 K 线走 OKX 公开接口，不需要密钥，也不会读 `.env`。周期写成 `30m` 和 `60m`（表结构里没有 `1h`，60m 就是 1 小时）。默认大约 24 个月。再拉一次会按入库时间覆盖同一根 K 线：
+
+```shell
+make up && make bootstrap
+uv run dataprice backfill --symbol BTC-USDT --months 24
+uv run dataprice backtest --symbol BTC-USDT --months 24
+```
+
+`dataprice.strategy` 做 ICT + SMC：1 小时用 BOS/CHoCH 定偏向，30 分钟只做同向结构里、扫完逆向流动性之后回到 FVG 或订单块的单。`generate_signals` 不连数据库。这条回测不出图。
 
 代码按层分开：
 
 dataprice.hotpath：内存里的持仓、额度和出站队列。evaluate / apply_fill 没有数据库调用。
 dataprice.session：开盘前把 PostgreSQL 快照载入内存，另一个线程把成交写回账本。
 dataprice.market：ClickHouse 的 K 线和逐笔。缓冲满了会拒绝继续堆数据，避免策略线程被落盘堵住。
+dataprice.strategy：ICT + SMC + 流动性信号。判断本身不读库，回测再从 market.bars 取 30m 和 60m。
 dataprice.factors：ArcticDB 因子面板。factor_xs 是一个因子、多标的；factor_ts 是一个标的、多因子。write 返回版本号，回测要用这个版本号或写入时刻做 as_of。
 dataprice.ledger：账户、资金流水、持仓、风控限额、订单、成交、策略参数和角色。
 行情表按 Asia/Shanghai 的月份分区，排序键是周期、标的、交易所时间。交易所时间、本地接收时间、入库时间分开存。财务类因子的索引要用公告变得可知的时间。

@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install up down bootstrap smoke feed test health
+.PHONY: help install up down bootstrap smoke feed backfill backtest test health
 
 help:
 	@printf '%s\n' \
@@ -10,6 +10,8 @@ help:
 		'make health     检查三个存储' \
 		'make smoke      对三个存储做一次读写验收' \
 		'make feed       订阅 OKX books5，把买卖一价写入 ClickHouse' \
+		'make backfill   从 OKX 拉 BTC-USDT 30m/60m 历史 K 线写入 ClickHouse' \
+		'make backtest   用已入库 K 线跑 ICT+SMC 回测' \
 		'make test       运行不依赖数据库的单元测试' \
 		'make down       停止容器，保留数据卷'
 
@@ -33,6 +35,12 @@ smoke:
 
 feed:
 	uv run dataprice feed
+
+backfill:
+	uv run dataprice backfill
+
+backtest:
+	uv run dataprice backtest
 
 test:
 	uv run pytest
