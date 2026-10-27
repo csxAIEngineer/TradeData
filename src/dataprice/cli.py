@@ -29,9 +29,21 @@ def main(argv: list[str] | None = None) -> None:
     )
     flow.add_argument("--symbol", default="BTC-USDT")
     flow.add_argument("--months", type=int, default=24, help="大约 30 天算一个月，默认 24")
-    backtest = sub.add_parser("backtest", help="用 market.bars 的 30m/60m 跑 ICT+SMC 回测")
+    spot = sub.add_parser(
+        "binance-backfill",
+        help="从 data.binance.vision 拉现货 BTCUSDT 5m，并合成 UTC 对齐的 10m",
+    )
+    spot.add_argument("--symbol", default="BTCUSDT")
+    spot.add_argument("--months", type=int, default=36, help="大约 30 天算一个月，默认 36")
+    spot.add_argument("--freq", default="5m", help="只支持 5m。10m 由完整的两根 5m 合成后一起写入")
+    backtest = sub.add_parser("backtest", help="用 market.bars 跑回测。ICT 用 30m/60m；--tpo-vwap 还可选 5m/10m")
     backtest.add_argument("--symbol", default="BTC-USDT")
     backtest.add_argument("--months", type=int, default=24, help="回测窗口，大约 30 天算一个月")
+    backtest.add_argument(
+        "--freq",
+        default="30m",
+        help="只和 --tpo-vwap 一起用：30m、5m 或 10m。默认 30m",
+    )
     backtest.add_argument("--fee-bps", type=float, default=5.0, help="每边手续费，基点。默认 5")
     backtest.add_argument("--slippage-bps", type=float, default=2.0, help="每边不利滑点，基点。默认 2")
     backtest.add_argument("--baseline", action="store_true", help="用最初的宽松规则，而不是评估候选")
@@ -128,6 +140,31 @@ def main(argv: list[str] | None = None) -> None:
             now=datetime.now(UTC),
         )
         logging.info("主动成交回补完成: %s", written)
+    elif args.command == "binance-backfill":
+        from datetime import datetime
+
+        from dataprice.feed.binance_history import backfill_spot_klines
+        from dataprice.timeutil import UTC
+
+        try:
+            spot_result = backfill_spot_klines(
+                symbol=args.symbol,
+                months=args.months,
+                freq=args.freq,
+                now=datetime.now(UTC),
+            )
+        except (RuntimeError, ValueError) as exc:
+            parser.error(str(exc))
+        logging.info(
+            "%s 5m %s 根，10m %s 根，%s → %s",
+            spot_result.symbol,
+            spot_result.bars_5m,
+            spot_result.bars_10m,
+            spot_result.first_open,
+            spot_result.last_open,
+        )
+        if spot_result.skipped:
+            logging.info("跳过 %s 个缺失文件: %s", len(spot_result.skipped), ", ".join(spot_result.skipped))
     elif args.command == "backtest":
         from dataclasses import replace
         from datetime import datetime, timedelta
@@ -165,6 +202,8 @@ def main(argv: list[str] | None = None) -> None:
                 "--baseline、--flow、--regime、--trend-regime、--grid、--long、"
                 "--short-regime、--debate-daily、--anti-sweep、--tpo-vwap 只能选一个"
             )
+        if args.freq != "30m" and not args.tpo_vwap:
+            parser.error("--freq 只和 --tpo-vwap 一起用")
         end = datetime.now(UTC)
         start = end - timedelta(days=args.months * 30)
         if args.tpo_vwap:
@@ -176,6 +215,9 @@ def main(argv: list[str] | None = None) -> None:
                 run_stored_tpo_vwap,
             )
 
+            tpo_freq = args.freq.strip().lower()
+            if tpo_freq not in {"5m", "10m", "30m"}:
+                parser.error(f"--tpo-vwap 只支持 5m、10m、30m，收到 {args.freq}")
             tpo_params = replace(tpo_vwap_evaluated_params(), fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
             try:
                 tpo = run_stored_tpo_vwap(
@@ -183,10 +225,11 @@ def main(argv: list[str] | None = None) -> None:
                     start=start,
                     end=end,
                     params=tpo_params,
+                    freq=tpo_freq,
                 )
-            except RuntimeError as exc:
+            except (RuntimeError, ValueError) as exc:
                 parser.error(str(exc))
-            logging.info("%s 30m %s 根", args.symbol, tpo.bars)
+            logging.info("%s %s %s 根", args.symbol, tpo_freq, tpo.bars)
             for line in format_tpo_vwap_report(tpo, tpo_params).splitlines():
                 logging.info("%s", line)
             return

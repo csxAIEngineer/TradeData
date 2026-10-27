@@ -19,13 +19,20 @@ BINANCE_VISION = "https://data.binance.vision/data/futures/um"
 FLOW_FREQ = "30m"
 
 
-def vision_kline_url(inst_id: str, freq: str, day: datetime, *, monthly: bool) -> str:
+def vision_kline_url(
+    inst_id: str,
+    freq: str,
+    day: datetime,
+    *,
+    monthly: bool,
+    root: str = BINANCE_VISION,
+) -> str:
     stamp = ensure_aware(day).astimezone(UTC)
     if monthly:
         name = f"{inst_id}-{freq}-{stamp:%Y-%m}.zip"
-        return f"{BINANCE_VISION}/monthly/klines/{inst_id}/{freq}/{name}"
+        return f"{root}/monthly/klines/{inst_id}/{freq}/{name}"
     name = f"{inst_id}-{freq}-{stamp:%Y-%m-%d}.zip"
-    return f"{BINANCE_VISION}/daily/klines/{inst_id}/{freq}/{name}"
+    return f"{root}/daily/klines/{inst_id}/{freq}/{name}"
 
 
 def archive_requests(
@@ -33,6 +40,8 @@ def archive_requests(
     freq: str,
     start: datetime,
     end: datetime,
+    *,
+    root: str = BINANCE_VISION,
 ) -> list[tuple[str, bool]]:
     """返回 ``(url, required)``。整月能盖住的用月文件；尾部未结束的月用日文件。
 
@@ -47,7 +56,7 @@ def archive_requests(
     while month < end:
         nxt = _next_month(month)
         if nxt <= end:
-            requests.append((vision_kline_url(inst_id, freq, month, monthly=True), True))
+            requests.append((vision_kline_url(inst_id, freq, month, monthly=True, root=root), True))
         else:
             day = max(month, start.replace(hour=0, minute=0, second=0, microsecond=0))
             last = end.date()
@@ -55,7 +64,9 @@ def archive_requests(
             published_through = end.date() - timedelta(days=1)
             while day.date() <= last and day < end:
                 required = day.date() < published_through
-                requests.append((vision_kline_url(inst_id, freq, day, monthly=False), required))
+                requests.append(
+                    (vision_kline_url(inst_id, freq, day, monthly=False, root=root), required)
+                )
                 day = day + timedelta(days=1)
         month = nxt
     return requests

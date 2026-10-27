@@ -16,6 +16,7 @@ from dataprice.strategy.tpo_vwap import (
     evaluated_params,
     format_tpo_vwap_report,
     run_tpo_vwap,
+    session_last_clock,
     tpo_profile,
     tpo_vwap_windows,
 )
@@ -48,6 +49,7 @@ def test_evaluated_params_stay_locked():
         scale_at_tpoc=False,
         band_scale=0.5,
         tpoc_scale=0.5,
+        bar_minutes=30,
     )
     run_tpo_vwap(_session(D1) + _session(D2), locked)
     assert evaluated_params() == locked
@@ -325,6 +327,27 @@ def test_cli_exposes_tpo_vwap_and_rejects_a_second_strategy(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["backtest", "--tpo-vwap", "--anti-sweep"])
     assert exc.value.code == 2
+    with pytest.raises(SystemExit) as exc:
+        main(["backtest", "--freq", "5m"])
+    assert exc.value.code == 2
+    with pytest.raises(SystemExit) as help_exc:
+        main(["--help"])
+    assert help_exc.value.code == 0
+    assert "binance-backfill" in capsys.readouterr().out
+
+
+def test_session_clock_follows_bar_length():
+    assert session_last_clock(30) == (23, 30)
+    assert session_last_clock(10) == (23, 50)
+    assert session_last_clock(5) == (23, 55)
+    params = TpoVwapParams(tick=1, fee_bps=0, slippage_bps=0, bar_minutes=5)
+    through_2330 = _span(D1, 5, 23 * 60 + 30)
+    assert run_tpo_vwap(through_2330, params).sessions == 0
+    assert run_tpo_vwap(through_2330, TpoVwapParams(tick=1, bar_minutes=30)).sessions == 1
+    complete = _span(D1, 5, 23 * 60 + 55)
+    assert run_tpo_vwap(complete, params).sessions == 1
+    text = format_tpo_vwap_report(run_tpo_vwap(complete, params), params)
+    assert "5m " in text
 
 
 def _zero(**overrides: object) -> TpoVwapParams:
@@ -334,6 +357,17 @@ def _zero(**overrides: object) -> TpoVwapParams:
     from dataclasses import replace
 
     return replace(params, **overrides)
+
+
+def _span(day: date, step: int, last_minute: int) -> list[Candle]:
+    start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+    candles: list[Candle] = []
+    minute = 0
+    while minute <= last_minute:
+        open_, high, low, close, volume = FLAT
+        candles.append(Candle(start + timedelta(minutes=minute), open_, high, low, close, volume))
+        minute += step
+    return candles
 
 
 def _session(

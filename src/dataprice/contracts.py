@@ -11,9 +11,9 @@ from typing import Literal
 Side = Literal["buy", "sell"]
 OrderType = Literal["limit", "market"]
 OrderStatus = Literal["new", "accepted", "partial", "filled", "canceled", "rejected"]
-BarFreq = Literal["1m", "5m", "15m", "30m", "60m", "1d"]
+BarFreq = Literal["1m", "5m", "10m", "15m", "30m", "60m", "1d"]
 
-BAR_FREQS = frozenset({"1m", "5m", "15m", "30m", "60m", "1d"})
+BAR_FREQS = frozenset({"1m", "5m", "10m", "15m", "30m", "60m", "1d"})
 NAME_RE = re.compile(r"^[\w][\w.\-]{0,127}$", re.UNICODE)
 
 QTY_QUANT = Decimal("0.0001")

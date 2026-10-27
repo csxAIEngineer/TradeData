@@ -4,7 +4,9 @@
 没有 ``strategy()``，也没有可核对的胜率。这里把拍卖理论收成一套机械规则：
 只在 K 线收盘后下单，当天只用已经走完的上一日分布。
 
-30 分钟一根就是一个 TPO 时间块。价格行按该日高低自动分成大约 80 档，
+一根 K 线就是一个 TPO 时间块。锁死的 30 分钟书用 30 分钟；5 分钟和 10 分钟
+只改块长和日终那一根（23:55、23:50），不改止损、价值区或振幅倍数。
+价格行按该日高低自动分成大约 80 档，
 原点在 0，档高是 tick 的整数倍。一根 K 线的最高价到最低价之间每一档加 1，
 不看成交量。POC 取计数最高的档；并列时取档心离区间中点更近的，还并列就取更低的。
 价值区从 POC 起，每次比较上下各 2 档的计数，大的一边纳入，相等就两边都纳入，
@@ -18,7 +20,7 @@ TPOC 用 POC 档的中心。
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Literal, Sequence
@@ -54,6 +56,7 @@ class TpoVwapParams:
     scale_at_tpoc: bool = False
     band_scale: float = 0.5
     tpoc_scale: float = 0.5
+    bar_minutes: int = 30
 
     def __post_init__(self) -> None:
         if self.tick <= 0:
@@ -78,11 +81,23 @@ class TpoVwapParams:
             raise ValueError("减仓比例必须在 (0, 1) 内")
         if self.band_scale + self.tpoc_scale > 1:
             raise ValueError("两段减仓比例加起来不能超过 1")
+        if self.bar_minutes < 1 or (24 * 60) % self.bar_minutes != 0:
+            raise ValueError("bar_minutes 必须是能整除 1440 的正整数")
 
 
 def evaluated_params() -> TpoVwapParams:
-    """锁死的 v1。不要按训练或留出的成交改这些数。"""
+    """锁死的 v1。不要按训练或留出的成交改这些数。``bar_minutes`` 默认 30。"""
     return TpoVwapParams()
+
+
+def session_last_clock(bar_minutes: int) -> tuple[int, int]:
+    """UTC 日最后一根的开盘钟点。5 分钟是 23:55，10 分钟是 23:50，30 分钟是 23:30。"""
+    if bar_minutes < 1 or (24 * 60) % bar_minutes != 0:
+        raise ValueError("bar_minutes 必须是能整除 1440 的正整数")
+    return divmod(24 * 60 - bar_minutes, 60)
+
+
+TPO_FREQ_MINUTES = {"5m": 5, "10m": 10, "30m": 30}
 
 
 @dataclass(frozen=True)
@@ -235,7 +250,7 @@ def run_tpo_vwap(
     candles: Sequence[Candle],
     params: TpoVwapParams | None = None,
 ) -> TpoVwapResult:
-    """在 30 分钟 K 线上跑 v1。同时只持有一笔，进场在信号那根的收盘价。"""
+    """跑 v1。同时只持有一笔，进场在信号那根的收盘价。块长看 ``params.bar_minutes``。"""
     params = params or evaluated_params()
     if not candles:
         raise ValueError("没有 K 线，不能做 TPO+VWAP")
@@ -260,20 +275,27 @@ def run_stored_tpo_vwap(
     end: datetime,
     params: TpoVwapParams | None = None,
     settings: Settings | None = None,
+    freq: str = "30m",
 ) -> TpoVwapResult:
-    """从 ClickHouse ``market.bars`` 读 30m，再跑 TPO+VWAP。"""
+    """从 ClickHouse ``market.bars`` 读指定周期，再跑 TPO+VWAP。
+
+    ``freq`` 会改写 ``bar_minutes``，所以 5 分钟不会在 23:30 被当成日终。
+    """
     from dataprice.market.repo import market_session
     from dataprice.strategy.candles import candles_from_frame
 
-    params = params or evaluated_params()
+    if freq not in TPO_FREQ_MINUTES:
+        raise ValueError(f"TPO+VWAP 只读 5m、10m、30m，收到 {freq}")
+    params = replace(params or evaluated_params(), bar_minutes=TPO_FREQ_MINUTES[freq])
     with market_session(settings) as repo:
-        frame = repo.query_bars([symbol], "30m", start, end)
+        frame = repo.query_bars([symbol], freq, start, end)
     candles = tuple(candles_from_frame(frame))
     if not candles:
-        raise RuntimeError(
-            "ClickHouse 里没有足够的 K 线。先执行: "
-            f"uv run dataprice backfill --symbol {symbol}"
-        )
+        if freq == "30m":
+            hint = f"uv run dataprice backfill --symbol {symbol} --freq 30m"
+        else:
+            hint = "uv run dataprice binance-backfill --symbol BTCUSDT --months 36 --freq 5m"
+        raise RuntimeError(f"ClickHouse 里没有 {symbol} {freq}。先执行: {hint}")
     return run_tpo_vwap(candles, params)
 
 
@@ -393,7 +415,7 @@ def format_tpo_vwap_report(
         ),
         (
             f"K 线 {result.first_open:%Y-%m-%d %H:%M} → {result.last_open:%Y-%m-%d %H:%M}，"
-            f"30m {result.bars} 根，完整 TPO 日 {result.sessions}，平仓 {len(result.trades)}。"
+            f"{params.bar_minutes}m {result.bars} 根，完整 TPO 日 {result.sessions}，平仓 {len(result.trades)}。"
             f"其中影线碰到 VAL/TPOC（空头则是 VAH/TPOC）的有 {touches} 笔。出场：{reason_text}。"
         ),
         "切分用进场 K 线的开盘时间。训练早于 2026-03-01，留出从这一天起。这些成交没有再拿去改参数。",
@@ -741,7 +763,7 @@ def _completed_profiles(
         grouped.setdefault(_utc_date(bar.open_ts), []).append(bar)
     profiles: dict[date, DayProfile] = {}
     for day, bars in grouped.items():
-        if not _session_complete(bars):
+        if not _session_complete(bars, params.bar_minutes):
             continue
         profile = tpo_profile(bars, params)
         if profile is not None:
@@ -749,9 +771,9 @@ def _completed_profiles(
     return profiles
 
 
-def _session_complete(bars: Sequence[Candle]) -> bool:
+def _session_complete(bars: Sequence[Candle], bar_minutes: int) -> bool:
     clocks = {_clock(bar.open_ts) for bar in bars}
-    return (0, 0) in clocks and (23, 30) in clocks
+    return (0, 0) in clocks and session_last_clock(bar_minutes) in clocks
 
 
 def _choose_step(low_tick: int, high_tick: int, target_rows: int, row_limit: int) -> tuple[int, int, int]:
@@ -859,7 +881,7 @@ def _flat_reason(
 ) -> ExitReason | None:
     last = index + 1 >= len(candles)
     boundary = not last and _utc_date(candles[index + 1].open_ts) != _utc_date(candles[index].open_ts)
-    clock_end = _clock(candles[index].open_ts) == (23, 30)
+    clock_end = _clock(candles[index].open_ts) == session_last_clock(params.bar_minutes)
     if not params.hold_overnight and (boundary or clock_end):
         return "session"
     if last:
