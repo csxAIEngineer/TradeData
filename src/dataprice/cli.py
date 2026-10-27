@@ -210,15 +210,21 @@ def main(argv: list[str] | None = None) -> None:
             if args.buy_only:
                 parser.error("--tpo-vwap 不和 --buy-only 一起用")
             from dataprice.strategy.tpo_vwap import (
+                TPO_FREQ_MINUTES,
                 evaluated_params as tpo_vwap_evaluated_params,
                 format_tpo_vwap_report,
                 run_stored_tpo_vwap,
             )
 
             tpo_freq = args.freq.strip().lower()
-            if tpo_freq not in {"5m", "10m", "30m"}:
+            if tpo_freq not in TPO_FREQ_MINUTES:
                 parser.error(f"--tpo-vwap 只支持 5m、10m、30m，收到 {args.freq}")
-            tpo_params = replace(tpo_vwap_evaluated_params(), fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
+            tpo_params = replace(
+                tpo_vwap_evaluated_params(),
+                fee_bps=args.fee_bps,
+                slippage_bps=args.slippage_bps,
+                bar_minutes=TPO_FREQ_MINUTES[tpo_freq],
+            )
             try:
                 tpo = run_stored_tpo_vwap(
                     symbol=args.symbol,
