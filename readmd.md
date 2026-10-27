@@ -51,6 +51,8 @@ uv run dataprice backtest --symbol BTC-USDT --months 24
 
 `uv run dataprice backtest --debate-daily` 在每根已收盘的 UTC 日线上，用当时已经知道的 4 小时效率比和结构，给下一日指定 long、short、grid 或 flat。三条猎手的默认参数不改，留出样本也不再调 0.25、CLV 0.70 和强区间。说明在 `doc/debate_daily.md`。
 
+`uv run dataprice backtest --anti-sweep` 用评估候选的同一份进场，把方向对调：扫等低做空，扫等高做多。止损放在反转单的止盈，止盈放在扫流动性的影线。`evaluated_params()` 和 `long_params()` 的默认值不改，也不在 2026 年的成交上重选参数。对照写在 `doc/anti_sweep_continuation.md`。
+
 代码按层分开：
 
 dataprice.hotpath：内存里的持仓、额度和出站队列。evaluate / apply_fill 没有数据库调用。

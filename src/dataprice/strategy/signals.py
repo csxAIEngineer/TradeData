@@ -28,6 +28,10 @@
 需要的话净变动还得是下跌。多头信号照原样保留。样本不够就否决这笔空头。
 ``exit_on_bias_flip`` 为假时，1 小时偏向翻转不作为出场，只留止损和止盈。
 ``breakeven_at_r`` 在价格先走出这么多 R 之后，下一根把止损抬到进场价。
+``continuation`` 为真时，上面的过滤仍按反转来写：扫卖侧才找看多失衡，扫买侧才找
+看空失衡，止损宽度也按扫流动性的影线计算。信号列表定下来之后才对调方向。
+延续单的止损放在反转单的止盈，止盈放在扫流动性那根影线。默认是假，
+``evaluated_params`` 不打开它。
 
 信号在当根收盘才知道。``to_factor_frame`` 把偏向和信号收成因子面板，
 索引是这根 K 线的收盘时间，可以直接交给 ``FactorStore.write_symbol_factors``。
@@ -106,6 +110,7 @@ class StrategyParams:
     short_er_bars: int = 18
     short_er_freq: Literal["4h", "1d"] = "4h"
     short_net_down: bool = False
+    continuation: bool = False
 
     def __post_init__(self) -> None:
         if self.wing < 1:
@@ -247,6 +252,17 @@ def short_regime_params() -> StrategyParams:
     见 ``doc/ict_smc_short.md``。
     """
     return replace(evaluated_params(), short_min_er=0.25, short_er_bars=18)
+
+
+def continuation_params() -> StrategyParams:
+    """评估候选的镜像：同一份进场，方向按扫流动性对调。
+
+    不改 ``evaluated_params``。扫等低的反转是多头，延续单改做空；
+    扫等高的反转是空头，延续单改做多。止损和止盈对调，所以延续单的止损
+    可以宽过 80 个基点。80 个基点仍只卡反转几何，两边因此是同一份进场。
+    见 ``doc/anti_sweep_continuation.md``。
+    """
+    return replace(evaluated_params(), continuation=True)
 
 
 def flow_params(min_imbalance: float = 0.0) -> StrategyParams:
@@ -468,7 +484,27 @@ def entry_signals(
                 require_down=params.short_net_down,
             )
         ]
+    if params.continuation:
+        signals = [flip_to_continuation(signal) for signal in signals]
     return signals
+
+
+def flip_to_continuation(signal: Signal) -> Signal:
+    """同一根、同一个价进场，方向对调，止损和止盈互换。
+
+    扫卖侧（等低）的教科书单是做多，止损在影线低点。延续单改做空，
+    止盈放在那根影线，止损放在原来的止盈：价格先打回扫流动性的极值才算对。
+    扫买侧（等高）相反，延续单做多。
+    """
+    if signal.side == "buy":
+        if not (signal.stop < signal.entry < signal.target):
+            raise ValueError("多头反转单的止损要在进场下方，止盈要在上方")
+        side: Side = "sell"
+    else:
+        if not (signal.target < signal.entry < signal.stop):
+            raise ValueError("空头反转单的止盈要在进场下方，止损要在上方")
+        side = "buy"
+    return replace(signal, side=side, stop=signal.target, target=signal.stop)
 
 
 def to_factor_frame(book: SignalBook) -> pd.DataFrame:

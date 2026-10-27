@@ -75,6 +75,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="按已收盘日线在 long、short、grid、flat 里选一个，当天不再改",
     )
+    backtest.add_argument(
+        "--anti-sweep",
+        action="store_true",
+        help="扫完等高/等低后顺着扫的方向做。进场仍是评估候选，只对调方向，不改 evaluated_params()",
+    )
     args = parser.parse_args(argv)
     if args.command == "bootstrap":
         from dataprice.bootstrap import bootstrap
@@ -145,16 +150,40 @@ def main(argv: list[str] | None = None) -> None:
                 "long",
                 "short_regime",
                 "debate_daily",
+                "anti_sweep",
             )
             if getattr(args, name)
         ]
         if len(chosen) > 1:
             parser.error(
                 "--baseline、--flow、--regime、--trend-regime、--grid、--long、"
-                "--short-regime、--debate-daily 只能选一个"
+                "--short-regime、--debate-daily、--anti-sweep 只能选一个"
             )
         end = datetime.now(UTC)
         start = end - timedelta(days=args.months * 30)
+        if args.anti_sweep:
+            if args.buy_only:
+                parser.error("--anti-sweep 不和 --buy-only 一起用")
+            from dataprice.strategy.backtest import format_anti_sweep_report, run_stored_anti_sweep
+
+            try:
+                anti = run_stored_anti_sweep(
+                    symbol=args.symbol,
+                    start=start,
+                    end=end,
+                    fee_bps=args.fee_bps,
+                    slippage_bps=args.slippage_bps,
+                )
+            except RuntimeError as exc:
+                parser.error(str(exc))
+            logging.info("%s 30m %s 根，60m %s 根", args.symbol, anti.bars_30, anti.bars_60)
+            for line in format_anti_sweep_report(
+                anti,
+                fee_bps=args.fee_bps,
+                slippage_bps=args.slippage_bps,
+            ).splitlines():
+                logging.info("%s", line)
+            return
         if args.debate_daily:
             if args.buy_only:
                 parser.error("--debate-daily 不和 --buy-only 一起用")

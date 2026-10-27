@@ -22,7 +22,17 @@ from dataprice.contracts import Side, q_cash, q_px, q_qty
 from dataprice.hotpath.state import OrderIntent, TradingState
 from dataprice.strategy.candles import Candle
 from dataprice.strategy.flow import TakerBar
-from dataprice.strategy.signals import Signal, SignalBook, StrategyParams, generate_signals
+from dataprice.strategy.signals import (
+    Signal,
+    SignalBook,
+    StrategyParams,
+    continuation_params,
+    evaluated_params,
+    flip_to_continuation,
+    generate_signals,
+    long_params,
+)
+from dataprice.timeutil import UTC
 
 ExitReason = Literal["stop", "target", "bias_flip", "end", "mode"]
 
@@ -41,6 +51,7 @@ class Trade:
     reason: ExitReason
     pnl: Decimal
     zone_kind: str
+    liquidity: str = ""
 
 
 @dataclass(frozen=True)
@@ -72,6 +83,7 @@ class _Position:
     entry_index: int
     entry_ts: datetime
     zone_kind: str
+    liquidity: str
     bp_before: Decimal
     mirrored: bool
     initial_stop: float
@@ -329,6 +341,7 @@ def _open(
         entry_index=signal.index,
         entry_ts=signal.open_ts,
         zone_kind=signal.zone_kind,
+        liquidity=signal.liquidity,
         bp_before=before,
         mirrored=mirrored,
         initial_stop=signal.stop,
@@ -377,6 +390,7 @@ def _close(
         reason=reason,
         pnl=pnl,
         zone_kind=position.zone_kind,
+        liquidity=position.liquidity,
     )
 
 
@@ -463,17 +477,230 @@ def run_stored_backtest(
 
     ``params.min_flow_imbalance`` 不为空时，再读 ``market.taker_flow``。
     """
+    params = params or StrategyParams()
+    candles_30, candles_60, flow = _load_stored_candles(
+        symbol=symbol,
+        start=start,
+        end=end,
+        settings=settings,
+        load_flow=params.min_flow_imbalance is not None,
+    )
+    result = run_backtest(
+        candles_30,
+        candles_60,
+        params,
+        symbol=symbol,
+        qty=qty,
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+        flow=flow,
+    )
+    return result, len(candles_30), len(candles_60)
+
+
+# 候选 P 的留出切点。参数搜索只用这一天之前的进场，见 doc/ict_smc_evaluation.md。
+HOLDOUT_START = datetime(2026, 3, 1, tzinfo=UTC)
+# 实验另外要求单独看 2026 年。1 月和 2 月仍落在候选 P 的训练窗里。
+YEAR_2026 = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class AntiSweepResult:
+    """反转书和延续书。水位拆分和 ``--long`` 都是单独重跑，互不占仓。"""
+
+    fade: BacktestResult
+    continuation: BacktestResult
+    eql_fade: BacktestResult
+    eql_continuation: BacktestResult
+    eqh_fade: BacktestResult
+    eqh_continuation: BacktestResult
+    long_fade: BacktestResult
+    long_continuation: BacktestResult
+    first_open: datetime
+    last_open: datetime
+    first_close: float
+    last_close: float
+    bars_30: int
+    bars_60: int
+
+
+def run_anti_sweep(
+    candles_30: Sequence[Candle],
+    candles_60: Sequence[Candle],
+    *,
+    symbol: str = "BTC-USDT",
+    qty: Decimal = Decimal("0.01"),
+    fee_bps: float = 0.0,
+    slippage_bps: float = 0.0,
+) -> AntiSweepResult:
+    """同一段 K 线上跑评估候选，以及它的方向对调。
+
+    延续单不另选参数。``--long`` 的对照用已经锁定的 ``long_params``，
+    只把方向对调，不用 2026 年的成交来改 CLV。
+    """
+    if not candles_30 or not candles_60:
+        raise ValueError("没有 K 线，不能做延续对照")
+    fade_params = evaluated_params()
+    if fade_params.continuation:
+        raise RuntimeError("evaluated_params 不能打开 continuation")
+    books = _paired_books(candles_30, candles_60, fade_params, continuation_params())
+    long_books = _paired_books(
+        candles_30,
+        candles_60,
+        long_params(),
+        continuation_params_of_long(),
+    )
+    shared = dict(symbol=symbol, qty=qty, fee_bps=fee_bps, slippage_bps=slippage_bps)
+    fade_book, continuation_book = books
+    long_fade_book, long_continuation_book = long_books
+    return AntiSweepResult(
+        fade=_simulate_book(candles_30, fade_book, fade_params, **shared),
+        continuation=_simulate_book(candles_30, continuation_book, fade_params, **shared),
+        eql_fade=_simulate_book(candles_30, _liquidity_book(fade_book, "eql"), fade_params, **shared),
+        eql_continuation=_simulate_book(
+            candles_30,
+            _liquidity_book(continuation_book, "eql"),
+            fade_params,
+            **shared,
+        ),
+        eqh_fade=_simulate_book(candles_30, _liquidity_book(fade_book, "eqh"), fade_params, **shared),
+        eqh_continuation=_simulate_book(
+            candles_30,
+            _liquidity_book(continuation_book, "eqh"),
+            fade_params,
+            **shared,
+        ),
+        long_fade=_simulate_book(candles_30, long_fade_book, long_params(), **shared),
+        long_continuation=_simulate_book(
+            candles_30,
+            long_continuation_book,
+            long_params(),
+            **shared,
+        ),
+        first_open=candles_30[0].open_ts,
+        last_open=candles_30[-1].open_ts,
+        first_close=candles_30[0].close,
+        last_close=candles_30[-1].close,
+        bars_30=len(candles_30),
+        bars_60=len(candles_60),
+    )
+
+
+def continuation_params_of_long() -> StrategyParams:
+    """``long_params`` 的方向对调。不改 ``long_params`` 本身。"""
+    locked = long_params()
+    if locked.continuation or locked.sides != ("buy",):
+        raise RuntimeError("long_params 应是只做多的反转书")
+    return _replace_continuation(locked)
+
+
+def format_anti_sweep_report(
+    result: AntiSweepResult,
+    *,
+    fee_bps: float,
+    slippage_bps: float,
+) -> str:
+    """反转和延续并排。切分用进场时间，上限不含。"""
+    lines = [
+        (
+            f"费用每边 {fee_bps:g} bps，滑点每边 {slippage_bps:g} bps，每手 0.01 BTC。"
+            "反转书是 evaluated_params（候选 P）。延续书是同一份进场，方向对调。"
+        ),
+        (
+            f"K 线 {result.first_open:%Y-%m-%d} → {result.last_open:%Y-%m-%d}，"
+            f"30m {result.bars_30} 根，60m {result.bars_60} 根，"
+            f"收盘价 {result.first_close:.2f} → {result.last_close:.2f}。"
+        ),
+        (
+            "训练切点沿用 2026-03-01：候选 P 和 --long 的参数只在这天之前的进场上选定。"
+            "2026-01-01 到 2026-03-01 仍在那次选择的样本里。"
+            "这次没有用任何 2026 年的成交改参数。"
+        ),
+        (
+            "延续单止损放在反转单的止盈，止盈放在扫流动性的影线。"
+            f"全样本止损中位数：反转 {_risk_text(result.fade)}，延续 {_risk_text(result.continuation)}。"
+            "80 bps 只限制反转几何，所以两边信号数相同，延续单的止损可以更宽。"
+        ),
+        f"信号 {result.fade.signals}。同一根若同时打到止损和止盈，先算出场，两边可能都亏。",
+        "",
+        _table_head(),
+        _table_rule(),
+    ]
+    for label, start, end in _windows():
+        lines.append(_table_row(label, "反转", result.fade, start, end))
+        lines.append(_table_row(label, "延续", result.continuation, start, end))
+    lines.extend(["", "等高 / 等低分开重跑，另一侧不占着唯一的仓位。", "", _table_head(), _table_rule()])
+    for kind, fade, continuation in (
+        ("等低 eql", result.eql_fade, result.eql_continuation),
+        ("等高 eqh", result.eqh_fade, result.eqh_continuation),
+    ):
+        for label, start, end in _windows():
+            lines.append(_table_row(f"{kind} {label}", "反转", fade, start, end))
+            lines.append(_table_row(f"{kind} {label}", "延续", continuation, start, end))
+    lines.extend(
+        [
+            "",
+            "多头候选是 long_params：只做扫等低，并且扫的那根收盘要落在高低区间的 70% 以上。CLV 仍是训练窗口锁定的，延续只对调方向。",
+            "",
+            _table_head(),
+            _table_rule(),
+        ]
+    )
+    for label, start, end in _windows():
+        lines.append(_table_row(label, "多头", result.long_fade, start, end))
+        lines.append(_table_row(label, "多头延续", result.long_continuation, start, end))
+    lines.append("")
+    lines.append(_open_line("反转", result.fade))
+    lines.append(_open_line("延续", result.continuation))
+    return "\n".join(lines)
+
+
+def run_stored_anti_sweep(
+    *,
+    symbol: str = "BTC-USDT",
+    start: datetime,
+    end: datetime,
+    qty: Decimal = Decimal("0.01"),
+    fee_bps: float = 0.0,
+    slippage_bps: float = 0.0,
+    settings: Settings | None = None,
+) -> AntiSweepResult:
+    """从 ClickHouse 读 K 线，跑反转和延续的对照。不读主动成交。"""
+    candles_30, candles_60, _flow = _load_stored_candles(
+        symbol=symbol,
+        start=start,
+        end=end,
+        settings=settings,
+        load_flow=False,
+    )
+    return run_anti_sweep(
+        candles_30,
+        candles_60,
+        symbol=symbol,
+        qty=qty,
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+    )
+
+
+def _load_stored_candles(
+    *,
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    settings: Settings | None,
+    load_flow: bool,
+) -> tuple[tuple[Candle, ...], tuple[Candle, ...], list[TakerBar] | None]:
     from dataprice.feed.binance_flow import BINANCE_UM_SOURCE
     from dataprice.market.repo import market_session
     from dataprice.strategy.candles import candles_from_frame
     from dataprice.strategy.flow import taker_bars_from_rows
 
-    params = params or StrategyParams()
     with market_session(settings) as repo:
         frame_30 = repo.query_bars([symbol], "30m", start, end)
         frame_60 = repo.query_bars([symbol], "60m", start, end)
         flow_frame = None
-        if params.min_flow_imbalance is not None:
+        if load_flow:
             flow_frame = repo.query_taker_flow(
                 [symbol],
                 "30m",
@@ -481,8 +708,8 @@ def run_stored_backtest(
                 end,
                 source=BINANCE_UM_SOURCE,
             )
-    candles_30 = candles_from_frame(frame_30)
-    candles_60 = candles_from_frame(frame_60)
+    candles_30 = tuple(candles_from_frame(frame_30))
+    candles_60 = tuple(candles_from_frame(frame_60))
     if not candles_30 or not candles_60:
         raise RuntimeError(
             "ClickHouse 里没有足够的 K 线。先执行: "
@@ -496,17 +723,143 @@ def run_stored_backtest(
                 "ClickHouse 里没有主动成交。先执行: "
                 f"uv run dataprice flow-backfill --symbol {symbol}"
             )
-    result = run_backtest(
-        candles_30,
-        candles_60,
-        params,
+    return candles_30, candles_60, flow
+
+
+def _replace_continuation(params: StrategyParams) -> StrategyParams:
+    from dataclasses import replace
+
+    return replace(params, continuation=True)
+
+
+def _paired_books(
+    candles_30: Sequence[Candle],
+    candles_60: Sequence[Candle],
+    fade: StrategyParams,
+    continuation: StrategyParams,
+) -> tuple[SignalBook, SignalBook]:
+    if fade.continuation or not continuation.continuation:
+        raise ValueError("配对必须是一份反转参数和一份延续参数")
+    origin = generate_signals(candles_30, candles_60, fade)
+    flipped = generate_signals(candles_30, candles_60, continuation)
+    if len(origin.signals) != len(flipped.signals):
+        raise RuntimeError(
+            f"延续单和反转单的信号数不一致: {len(flipped.signals)} vs {len(origin.signals)}"
+        )
+    for left, right in zip(origin.signals, flipped.signals, strict=True):
+        if right != flip_to_continuation(left):
+            raise RuntimeError(f"第 {left.index} 根的延续单不是反转单的对调")
+    return origin, flipped
+
+
+def _simulate_book(
+    candles: Sequence[Candle],
+    book: SignalBook,
+    params: StrategyParams,
+    *,
+    symbol: str,
+    qty: Decimal,
+    fee_bps: float,
+    slippage_bps: float,
+) -> BacktestResult:
+    return simulate(
+        candles,
+        book,
         symbol=symbol,
         qty=qty,
         fee_bps=fee_bps,
         slippage_bps=slippage_bps,
-        flow=flow,
+        exit_on_bias_flip=params.exit_on_bias_flip,
+        breakeven_at_r=params.breakeven_at_r,
     )
-    return result, len(candles_30), len(candles_60)
+
+
+def _liquidity_book(book: SignalBook, kind: str) -> SignalBook:
+    return SignalBook(
+        candles=book.candles,
+        signals=tuple(signal for signal in book.signals if signal.liquidity == kind),
+        bias_30m=book.bias_30m,
+        bias_1h=book.bias_1h,
+    )
+
+
+def _windows() -> tuple[tuple[str, datetime | None, datetime | None], ...]:
+    return (
+        ("全样本", None, None),
+        ("2026年前", None, YEAR_2026),
+        ("训练 <2026-03-01", None, HOLDOUT_START),
+        ("2026年起", YEAR_2026, None),
+        ("留出 ≥2026-03-01", HOLDOUT_START, None),
+    )
+
+
+def _table_head() -> str:
+    return "| 窗口 | 书 | 笔数 | 盈亏 | 胜率 | 盈亏比 | 最大回撤 |"
+
+
+def _table_rule() -> str:
+    return "| --- | --- | ---: | ---: | ---: | ---: | ---: |"
+
+
+def _table_row(
+    label: str,
+    book: str,
+    result: BacktestResult,
+    start: datetime | None,
+    end: datetime | None,
+) -> str:
+    stats = performance(_entered_between(result, start, end))
+    return (
+        f"| {label} | {book} | {stats.trades} | {stats.pnl} | "
+        f"{stats.win_rate:.1%} | {_pf(stats.profit_factor)} | {stats.max_drawdown} |"
+    )
+
+
+def _entered_between(
+    result: BacktestResult,
+    start: datetime | None,
+    end: datetime | None,
+) -> BacktestResult:
+    trades = tuple(
+        trade
+        for trade in result.trades
+        if (start is None or trade.entry_ts >= start) and (end is None or trade.entry_ts < end)
+    )
+    return BacktestResult(
+        trades=trades,
+        signals=result.signals,
+        starting_buying_power=result.starting_buying_power,
+        ending_buying_power=result.ending_buying_power,
+    )
+
+
+def _pf(value: float) -> str:
+    if value == float("inf"):
+        return "inf"
+    return f"{value:.2f}"
+
+
+def _risk_text(result: BacktestResult) -> str:
+    widths: list[float] = []
+    for trade in result.trades:
+        entry = float(trade.entry)
+        if entry <= 0:
+            continue
+        risk = (entry - trade.stop) if trade.side == "buy" else (trade.stop - entry)
+        if risk > 0:
+            widths.append(risk / entry * 10_000)
+    if not widths:
+        return "没有成交"
+    widths.sort()
+    mid = len(widths) // 2
+    median = widths[mid] if len(widths) % 2 else (widths[mid - 1] + widths[mid]) / 2
+    return f"{median:.0f} bps"
+
+
+def _open_line(label: str, result: BacktestResult) -> str:
+    if result.open_side is None:
+        return f"{label}没有未平仓"
+    return f"{label}未平仓 {result.open_side} @ {result.open_entry}"
 
 
 def _slipped(price: float, side: Side, slippage_bps: float) -> float:
