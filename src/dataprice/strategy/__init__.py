@@ -1,6 +1,6 @@
-"""ICT + SMC + 流动性、猴市震荡网格，以及日线辩论分配。
+"""ICT + SMC + 流动性、猴市震荡网格、日线辩论分配，以及 TPO+VWAP。
 
-信号、网格和分配都不读数据库，也不共用一套默认参数。回测行情来自 ``market.bars``。
+信号、网格、分配和 TPO 都不读数据库，也不共用一套默认参数。回测行情来自 ``market.bars``。
 """
 
 from dataprice.strategy.backtest import BacktestResult, format_report, run_backtest, simulate
@@ -26,6 +26,13 @@ from dataprice.strategy.signals import (
     short_regime_params,
     trend_regime_params,
 )
+from dataprice.strategy.tpo_vwap import (
+    TpoVwapParams,
+    TpoVwapResult,
+    format_tpo_vwap_report,
+    run_tpo_vwap,
+)
+from dataprice.strategy.tpo_vwap import evaluated_params as tpo_vwap_params
 
 __all__ = [
     "BacktestResult",
@@ -52,4 +59,9 @@ __all__ = [
     "simulate",
     "simulate_grid",
     "trend_regime_params",
+    "TpoVwapParams",
+    "TpoVwapResult",
+    "format_tpo_vwap_report",
+    "run_tpo_vwap",
+    "tpo_vwap_params",
 ]

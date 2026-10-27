@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> None:
     backtest.add_argument(
         "--long",
         action="store_true",
-        help="只做多，并要求扫卖侧那根的收盘落在高低区间的 70% 以上",
+        help="只做多，并要求扫卖侧那根的收盘落在高低区间的 70%% 以上",
     )
     backtest.add_argument(
         "--buy-only",
@@ -79,6 +79,11 @@ def main(argv: list[str] | None = None) -> None:
         "--anti-sweep",
         action="store_true",
         help="扫完等高/等低后顺着扫的方向做。进场仍是评估候选，只对调方向，不改 evaluated_params()",
+    )
+    backtest.add_argument(
+        "--tpo-vwap",
+        action="store_true",
+        help="上一完整 UTC 日的 TPO 价值区加当日 VWAP 收回。参数锁在 tpo_vwap.evaluated_params()，不搜索",
     )
     args = parser.parse_args(argv)
     if args.command == "bootstrap":
@@ -151,16 +156,40 @@ def main(argv: list[str] | None = None) -> None:
                 "short_regime",
                 "debate_daily",
                 "anti_sweep",
+                "tpo_vwap",
             )
             if getattr(args, name)
         ]
         if len(chosen) > 1:
             parser.error(
                 "--baseline、--flow、--regime、--trend-regime、--grid、--long、"
-                "--short-regime、--debate-daily、--anti-sweep 只能选一个"
+                "--short-regime、--debate-daily、--anti-sweep、--tpo-vwap 只能选一个"
             )
         end = datetime.now(UTC)
         start = end - timedelta(days=args.months * 30)
+        if args.tpo_vwap:
+            if args.buy_only:
+                parser.error("--tpo-vwap 不和 --buy-only 一起用")
+            from dataprice.strategy.tpo_vwap import (
+                evaluated_params as tpo_vwap_evaluated_params,
+                format_tpo_vwap_report,
+                run_stored_tpo_vwap,
+            )
+
+            tpo_params = replace(tpo_vwap_evaluated_params(), fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
+            try:
+                tpo = run_stored_tpo_vwap(
+                    symbol=args.symbol,
+                    start=start,
+                    end=end,
+                    params=tpo_params,
+                )
+            except RuntimeError as exc:
+                parser.error(str(exc))
+            logging.info("%s 30m %s 根", args.symbol, tpo.bars)
+            for line in format_tpo_vwap_report(tpo, tpo_params).splitlines():
+                logging.info("%s", line)
+            return
         if args.anti_sweep:
             if args.buy_only:
                 parser.error("--anti-sweep 不和 --buy-only 一起用")
