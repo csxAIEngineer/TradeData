@@ -25,7 +25,7 @@ def format_sniper_report(result: SniperResult, params: SniperParams | None = Non
     avg_price = sum(price_rs) / len(price_rs) if price_rs else 0.0
     count = len(result.trades)
     lines = [
-        "一击必杀 v0：宏观门只拦新开仓，日线定偏向，4H 三条 EMA 同向转并且 ATR 处于低位才进场。",
+        "一击必杀 v0：宏观门只拦新开仓，日线定偏向，4H 回踩摆动点、订单块或公允价值缺口才进场。",
         (
             f"MacroGate {params.macro_version}：DXY、10Y TIPS、HY OAS、VIX 等权。"
             f"因子不高于自己最近 {params.macro_lookback} 个收盘的中位数记 1，否则记 0。"
@@ -37,10 +37,9 @@ def format_sniper_report(result: SniperResult, params: SniperParams | None = Non
             f"{params.structure_days} 根日线的最高价，并且收盘在 EMA{params.ema_span} 之上。做空对称。没有偏向不做。"
         ),
         (
-            f"4H 做多：EMA{params.ema_fast}、EMA{params.ema_mid}、EMA{params.ema_slow} "
-            f"都高于自己 {params.ema_slope_bars} 根之前的值，并且 ATR{params.atr_length}/收盘 "
-            f"不高于最近 {params.atr_percentile_window} 根（含本根）的 {params.atr_percentile * 100:.0f} 分位。"
-            "止损在这根最低价之外。做空对称。"
+            "4H 做多：回踩摆动低点、看涨订单块或看涨公允价值缺口。"
+            f"摆动点左右各 {params.pivot_k} 根确认。影线进区但不破远端，收盘回到区上方。"
+            "止损在这根最低价之外。做空对称。刺破远端再收回不做。"
         ),
         (
             "全仓：数量 = 权益 × 杠杆 / 进场价。"

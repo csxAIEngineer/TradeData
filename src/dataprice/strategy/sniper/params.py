@@ -26,13 +26,6 @@ class SniperParams:
     ema_span: int = 50
     structure_days: int = 20
     pivot_k: int = 2
-    ema_fast: int = 6
-    ema_mid: int = 12
-    ema_slow: int = 32
-    ema_slope_bars: int = 1
-    atr_length: int = 14
-    atr_percentile_window: int = 20
-    atr_percentile: float = 0.30
     stop_buffer_bps: float = 0.0
     equity: Decimal = Decimal("10000")
     leverage: float = 20.0
@@ -57,18 +50,6 @@ class SniperParams:
             raise ValueError("structure_days 至少为 2")
         if self.pivot_k < 1:
             raise ValueError("pivot_k 至少为 1")
-        if self.ema_fast < 2 or self.ema_mid < 2 or self.ema_slow < 2:
-            raise ValueError("进场 EMA 周期至少为 2")
-        if not self.ema_fast < self.ema_mid < self.ema_slow:
-            raise ValueError("进场 EMA 必须是快 < 中 < 慢")
-        if self.ema_slope_bars < 1:
-            raise ValueError("ema_slope_bars 至少为 1")
-        if self.atr_length < 2:
-            raise ValueError("atr_length 至少为 2")
-        if self.atr_percentile_window < 3:
-            raise ValueError("atr_percentile_window 至少为 3")
-        if not 0 < self.atr_percentile <= 1:
-            raise ValueError("atr_percentile 必须在 (0, 1] 内")
         if self.stop_buffer_bps < 0:
             raise ValueError("stop_buffer_bps 不能为负")
         if self.equity <= 0:

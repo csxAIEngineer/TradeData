@@ -1,6 +1,6 @@
 """一击必杀 v0 的回测。判断本身不读库。
 
-同时只持有一笔。进场在信号那根 4H 的收盘：三条 EMA 同向转，并且 ATR/收盘处于自己的低位。
+同时只持有一笔。进场在信号那根 4H 的收盘：回踩摆动点、订单块或公允价值缺口，收盘站回有利的一侧。
 从下一根才看出场。同一根先碰到止损就按止损走，不再给目标。
 GATE=0 只是不开新仓，不平掉手里的单。偏向翻掉也不平。
 数据走到头还没打到止损或目标，按最后一根收盘记一笔 ``end``，这是回测收尾，不是规则出场。
@@ -17,7 +17,7 @@ from dataprice.config import Settings
 from dataprice.contracts import Side, q_px
 from dataprice.strategy.candles import Candle, assert_sorted
 from dataprice.strategy.sniper.bias import DailyBias, bias_for_session, daily_bias
-from dataprice.strategy.sniper.entry import EntrySeries, entry_series, find_ema_turn, stop_beyond_wick
+from dataprice.strategy.sniper.entry import Zone, find_retest, liquidity_zones, stop_beyond_wick
 from dataprice.strategy.sniper.macro_gate import EffectiveGate, GateCalendar, MacroBook
 from dataprice.strategy.sniper.params import SniperParams, evaluated_params
 from dataprice.strategy.sniper.resample import to_4h, to_daily
@@ -81,7 +81,7 @@ def run_sniper(
     trades: list[SniperTrade] = []
     position: _Position | None = None
     skipped = 0
-    series = entry_series(bars_4h, params)
+    zones = liquidity_zones(bars_4h, params)
     for index, bar in enumerate(bars_4h):
         if position is not None:
             closed = _advance(position, bar, index, params)
@@ -91,7 +91,7 @@ def run_sniper(
             continue
         if trade_start is not None and bar.open_ts < trade_start:
             continue
-        opened, skipped_one = _try_open(bars_4h, index, biases, calendar, params, series)
+        opened, skipped_one = _try_open(bars_4h, index, biases, calendar, params, zones)
         skipped += skipped_one
         position = opened
     if position is not None:
@@ -205,7 +205,7 @@ def _try_open(
     biases: Sequence[DailyBias],
     calendar: Mapping[date, EffectiveGate],
     params: SniperParams,
-    series: EntrySeries,
+    zones: Sequence[Zone],
 ) -> tuple[_Position | None, int]:
     if index + 1 >= len(bars):
         return None, 0
@@ -217,7 +217,7 @@ def _try_open(
     bias = bias_for_session(biases, session)
     if bias is None or bias.bias == "flat":
         return None, 0
-    signal = find_ema_turn(bars, index, params, series)
+    signal = find_retest(bars, index, params, zones)
     if signal is None:
         return None, 0
     if signal.side == "buy" and bias.bias != "long":
