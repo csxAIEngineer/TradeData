@@ -1,15 +1,15 @@
-"""4H 多 EMA 转势，并且波动低于自己的近期中位数。
+"""4H 多 EMA 转势，并且波动不高于自己近期的 30 分位。
 
 做多：EMA6、EMA12、EMA32 每一条都严格高于 ``ema_slope_bars`` 根之前（默认就是上一根）。
 做空三条都严格更低。走平不算。不要求快线在慢线之上。
-ATR 用 Wilder。低波动看 ATR/收盘，不高于最近 ``atr_median_window`` 根（含本根）的中位数。
+ATR 用 Wilder。低波动看 ATR/收盘，不高于最近 ``atr_percentile_window`` 根（含本根）的
+``atr_percentile`` 分位，默认 0.30。
 止损在这根影线之外。缓冲为 0 时，做多止损是最低价，做空是最高价。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from statistics import median
 from typing import Mapping, Sequence
 
 from dataprice.contracts import Side
@@ -33,7 +33,7 @@ class EmaSignal:
     side: Side
     atr: float
     atr_ratio: float
-    median_ratio: float
+    threshold_ratio: float
     wick: float
 
 
@@ -58,7 +58,7 @@ def find_ema_turn(
     params: SniperParams,
     series: EntrySeries | None = None,
 ) -> EmaSignal | None:
-    """这根 4H 三条 EMA 同向转，并且 ATR/收盘不高于自己的滚动中位数。"""
+    """这根 4H 三条 EMA 同向转，并且 ATR/收盘不高于自己的滚动分位。"""
     if index < 0 or index >= len(bars):
         return None
     series = series or entry_series(bars, params)
@@ -71,12 +71,12 @@ def find_ema_turn(
         side = "sell"
     else:
         return None
-    sample = _ratio_window(series.ratios, index, params.atr_median_window)
+    sample = _ratio_window(series.ratios, index, params.atr_percentile_window)
     if sample is None:
         return None
     current = sample[-1]
-    typical = median(sample)
-    if current > typical:
+    threshold = inclusive_percentile(sample, params.atr_percentile)
+    if current > threshold:
         return None
     atr_now = series.atr[index]
     if atr_now is None:
@@ -86,7 +86,7 @@ def find_ema_turn(
         side=side,
         atr=atr_now,
         atr_ratio=current,
-        median_ratio=typical,
+        threshold_ratio=threshold,
         wick=bar.low if side == "buy" else bar.high,
     )
 
@@ -143,6 +143,26 @@ def _slope(values: Sequence[float | None], index: int, lookback: int, *, up: boo
     if up:
         return now > prev
     return now < prev
+
+
+def inclusive_percentile(sample: Sequence[float], percentile: float) -> float:
+    """含端点的线性分位。位置是 ``percentile * (n - 1)``，落在两档中间就插值。
+
+    和 NumPy 默认的 ``percentile`` 相同。``0.30`` 是第 30 分位，不是中位数。
+    """
+    if not sample:
+        raise ValueError("分位窗口是空的")
+    if not 0 < percentile <= 1:
+        raise ValueError("atr_percentile 必须在 (0, 1] 内")
+    ordered = sorted(sample)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = percentile * (len(ordered) - 1)
+    lower = int(position)
+    if lower >= len(ordered) - 1:
+        return ordered[-1]
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[lower + 1] * weight
 
 
 def _ratio_window(ratios: Sequence[float | None], index: int, window: int) -> list[float] | None:

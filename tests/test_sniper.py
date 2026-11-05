@@ -11,7 +11,7 @@ from dataprice.contracts import q_cash
 from dataprice.strategy.candles import Candle
 from dataprice.strategy.sniper.backtest import run_sniper, run_sniper_intraday
 from dataprice.strategy.sniper.bias import daily_bias, ema_close
-from dataprice.strategy.sniper.entry import entry_series, find_ema_turn, stop_beyond_wick
+from dataprice.strategy.sniper.entry import entry_series, find_ema_turn, inclusive_percentile, stop_beyond_wick
 from dataprice.strategy.sniper.fetch import parse_fred_csv, parse_yahoo_chart
 from dataprice.strategy.sniper.macro_gate import (
     GateCalendar,
@@ -44,15 +44,20 @@ def test_evaluated_params_stay_locked():
     assert locked.ema_slow == 32
     assert locked.ema_slope_bars == 1
     assert locked.atr_length == 14
-    assert locked.atr_median_window == 20
-    assert locked.min_account_rr == 3
+    assert locked.atr_percentile_window == 20
+    assert locked.atr_percentile == 0.30
+    assert not hasattr(locked, "atr_median_window")
+    assert locked.min_account_rr == 1.618
     assert locked.leverage == 20
     assert not hasattr(locked, "risk_fraction")
     assert locked.equity == Decimal("10000")
-    assert SniperParams(min_account_rr=3).min_account_rr == 3
+    assert SniperParams(min_account_rr=1.618).min_account_rr == 1.618
+    assert SniperParams(min_account_rr=1).min_account_rr == 1
     assert SniperParams(min_account_rr=10).min_account_rr == 10
     with pytest.raises(ValueError):
-        SniperParams(min_account_rr=2.99)
+        SniperParams(min_account_rr=0.99)
+    with pytest.raises(ValueError):
+        SniperParams(atr_percentile=0)
     with pytest.raises(ValueError):
         SniperParams(macro_version="v0.2")
 
@@ -189,7 +194,7 @@ def test_ema_turn_needs_all_three_slopes_and_a_low_atr_ratio():
     series = entry_series(rising, params)
     for span in (params.ema_fast, params.ema_mid, params.ema_slow):
         assert series.emas[span][39] > series.emas[span][38]
-    assert signal.atr_ratio <= signal.median_ratio
+    assert signal.atr_ratio <= signal.threshold_ratio
     assert signal.wick == rising[39].low
     assert stop_beyond_wick(signal.side, signal.wick, 0) == signal.wick
     assert stop_beyond_wick("buy", 98, 100) == pytest.approx(97.02)
@@ -213,31 +218,47 @@ def test_ema_turn_needs_all_three_slopes_and_a_low_atr_ratio():
     short = find_ema_turn(falling, 39, params)
     assert short is not None and short.side == "sell"
     assert short.wick == falling[39].high
-    assert short.atr_ratio <= short.median_ratio
+    assert short.atr_ratio <= short.threshold_ratio
 
     locked_bars = _steady_bars(40, start=100, step=0.5)
     locked = find_ema_turn(locked_bars, 39, evaluated_params())
     assert locked is not None and locked.side == "buy"
+    assert locked.atr_ratio <= locked.threshold_ratio
     assert find_ema_turn(locked_bars, 31, evaluated_params()) is None
 
 
-def test_full_notional_sizes_to_equity_times_leverage_and_three_account_r():
+def test_low_atr_threshold_is_the_30th_percentile():
+    assert inclusive_percentile(list(range(1, 21)), 0.30) == pytest.approx(6.7)
+    assert inclusive_percentile(list(range(1, 21)), 0.50) == pytest.approx(10.5)
+    quiet = _steady_bars(40, start=100, step=0.4, width=0.5)
+    mild = list(quiet)
+    last = mild[39]
+    mild[39] = Candle(last.open_ts, last.close, last.close + 0.8, last.close - 0.5, last.close, 1)
+    assert find_ema_turn(mild, 39, evaluated_params()) is None
+    at_median = find_ema_turn(mild, 39, SniperParams(atr_percentile=0.50))
+    assert at_median is not None and at_median.side == "buy"
+    assert at_median.atr_ratio <= at_median.threshold_ratio
+
+
+def test_full_notional_sizes_at_twenty_times_equity_and_one_point_six_account_r():
     plan = plan_trade("buy", 102, 98, _params())
     assert plan is not None
     assert plan.qty == Decimal("1960.7843")
     assert plan.qty * plan.entry == pytest.approx(Decimal("200000"), abs=Decimal("0.01"))
     assert plan.entry == Decimal("102")
     assert plan.stop == Decimal("98")
-    assert plan.target == Decimal("114")
+    assert plan.target == Decimal("108.472000")
     assert plan.risk_cash == Decimal("7843.1372")
-    assert plan.planned_price_r == pytest.approx(3)
-    assert plan.planned_account_r == pytest.approx(3)
+    assert plan.planned_price_r == pytest.approx(1.618)
+    assert plan.planned_account_r == pytest.approx(1.618)
     assert plan.leverage_used == pytest.approx(20)
 
     five = plan_trade("buy", 102, 98, _params(leverage=5))
     assert five is not None and five.qty == Decimal("490.1961")
     assert five.leverage_used == pytest.approx(5)
 
+    three = plan_trade("buy", 102, 98, _params(min_account_rr=3))
+    assert three is not None and three.qty == plan.qty and three.target == Decimal("114")
     ten = plan_trade("buy", 102, 98, _params(min_account_rr=10))
     assert ten is not None
     assert ten.qty == plan.qty
@@ -246,8 +267,8 @@ def test_full_notional_sizes_to_equity_times_leverage_and_three_account_r():
 
     costly = plan_trade("buy", 102, 98, _params(fee_bps=5, slippage_bps=2))
     assert costly is not None
-    assert costly.planned_account_r >= 3
-    assert costly.planned_price_r > 3
+    assert costly.planned_account_r >= 1.618
+    assert costly.planned_price_r > 1.618
     assert costly.entry > plan.entry
     assert costly.risk_cash > plan.risk_cash
 
@@ -255,8 +276,9 @@ def test_full_notional_sizes_to_equity_times_leverage_and_three_account_r():
     assert tight is not None
     assert tight.qty == Decimal("1999.8000")
     assert tight.leverage_used == pytest.approx(20)
-    assert tight.planned_account_r == pytest.approx(3)
-    assert plan_trade("sell", 100, 140, _params()) is None
+    assert tight.planned_account_r >= 1.618
+    assert plan_trade("sell", 100, 140, _params(min_account_rr=3)) is None
+    assert plan_trade("sell", 100, 170, _params()) is None
     assert plan_trade("sell", 100, 120, _params(min_account_rr=10)) is None
 
 
@@ -272,13 +294,13 @@ def test_long_target_short_target_and_stop():
     assert trade.reason == "target" and trade.side == "buy" and trade.bias == "long"
     assert trade.entry_ts == signal.open_ts
     assert trade.qty == Decimal("1960.7843")
-    assert trade.pnl == q_cash(Decimal("23529.4116"))
-    assert trade.account_r == pytest.approx(3)
-    assert trade.price_r == pytest.approx(3)
+    assert trade.pnl == q_cash(Decimal("12690.1960"))
+    assert trade.account_r == pytest.approx(1.618)
+    assert trade.price_r == pytest.approx(1.618)
     assert trade.stop == Decimal("98")
     text = format_sniper_report(result, _params())
     assert "价格 R" in text and "账户 R" in text and "v0.1" in text
-    assert "全仓" in text and "EMA2" in text and "ATR3" in text and ">= 3" in text
+    assert "全仓" in text and "EMA2" in text and "ATR3" in text and "30 分位" in text and ">= 1.618" in text
 
     stopped = run_sniper(
         _long_path(signal, _hour4(date(2026, 1, 12), 4, 102, 110, 90, 100)),
@@ -291,7 +313,7 @@ def test_long_target_short_target_and_stop():
     assert stopped.trades[0].account_r == pytest.approx(-1)
 
     ended = run_sniper(
-        _long_path(signal, _hour4(date(2026, 1, 12), 4, 103, 110, 99, 104)),
+        _long_path(signal, _hour4(date(2026, 1, 12), 4, 103, 107, 99, 104)),
         daily,
         _params(),
         macro=macro,
@@ -315,7 +337,7 @@ def test_gate_blocks_entries_and_does_not_flatten():
     held = run_sniper(
         _long_path(
             signal,
-            _hour4(date(2026, 1, 13), 0, 103, 110, 99, 104),
+            _hour4(date(2026, 1, 13), 0, 103, 107, 99, 104),
             _hour4(date(2026, 1, 14), 0, 104, 160, 100, 150),
         ),
         daily,
@@ -355,9 +377,9 @@ def test_short_turn_reaches_three_account_r():
     assert trade.entry_ts == signal.open_ts
     assert trade.qty == Decimal("2061.8557")
     assert trade.stop == Decimal("105")
-    assert trade.target == Decimal("73")
-    assert trade.pnl == q_cash(Decimal("49484.5368"))
-    assert trade.account_r == pytest.approx(3)
+    assert trade.target == Decimal("84.056000")
+    assert trade.pnl == q_cash(Decimal("26688.6602"))
+    assert trade.account_r == pytest.approx(1.618)
 
 
 def test_aggregate_drops_incomplete_buckets():
@@ -454,7 +476,7 @@ def _params(**overrides: object) -> SniperParams:
     values: dict[str, object] = {
         "equity": Decimal("10000"),
         "leverage": 20.0,
-        "min_account_rr": 3.0,
+        "min_account_rr": 1.618,
         "fee_bps": 0.0,
         "slippage_bps": 0.0,
         "ema_fast": 2,
@@ -462,7 +484,8 @@ def _params(**overrides: object) -> SniperParams:
         "ema_slow": 4,
         "ema_slope_bars": 1,
         "atr_length": 3,
-        "atr_median_window": 3,
+        "atr_percentile_window": 3,
+        "atr_percentile": 0.30,
         "ema_span": 3,
         "structure_days": 3,
         "pivot_k": 1,
@@ -513,17 +536,17 @@ def _hour4(day: date, hour: int, open_: float, high: float, low: float, close: f
     return Candle(datetime(day.year, day.month, day.day, hour, tzinfo=UTC), open_, high, low, close, 1)
 
 
-def _steady_bars(count: int, *, start: float, step: float) -> list[Candle]:
+def _steady_bars(count: int, *, start: float, step: float, width: float = 1.0) -> list[Candle]:
     opened = datetime(2026, 1, 1, tzinfo=UTC)
     bars: list[Candle] = []
     for index in range(count):
         close = start + step * index
-        bars.append(Candle(opened + timedelta(hours=4 * index), close, close + 1, close - 1, close, 1))
+        bars.append(Candle(opened + timedelta(hours=4 * index), close, close + width, close - width, close, 1))
     return bars
 
 
 def _compressed_decline(count: int) -> list[Candle]:
-    """前面波幅大，最后几根收窄，下跌时 ATR/收盘 才能落到中位数上。"""
+    """前面波幅大，最后几根收窄，下跌时 ATR/收盘 才能落到 30 分位上。"""
     opened = datetime(2026, 1, 1, tzinfo=UTC)
     bars: list[Candle] = []
     for index in range(count):
@@ -558,11 +581,10 @@ def _long_path(signal: Candle, *after: Candle) -> list[Candle]:
 
 
 def _short_path(signal: Candle, *after: Candle) -> list[Candle]:
-    """下跌，并且靠近信号时把波幅收窄，ATR/收盘 才不高于自己的中位数。"""
+    """下跌。前面的波幅比信号这根宽，ATR/收盘 才会落到 30 分位以下。"""
     bars: list[Candle] = []
     slots = _weekday_slots()
     for index, (day, hour) in enumerate(slots):
         close = signal.close + (len(slots) - index)
-        width = 8 if index < 16 else 2
-        bars.append(_hour4(day, hour, close, close + width, close - width, close))
+        bars.append(_hour4(day, hour, close, close + 20, close - 20, close))
     return bars + [signal, *after]

@@ -39,7 +39,8 @@ def format_sniper_report(result: SniperResult, params: SniperParams | None = Non
         (
             f"4H 做多：EMA{params.ema_fast}、EMA{params.ema_mid}、EMA{params.ema_slow} "
             f"都高于自己 {params.ema_slope_bars} 根之前的值，并且 ATR{params.atr_length}/收盘 "
-            f"不高于最近 {params.atr_median_window} 根（含本根）的中位数。止损在这根最低价之外。做空对称。"
+            f"不高于最近 {params.atr_percentile_window} 根（含本根）的 {params.atr_percentile * 100:.0f} 分位。"
+            "止损在这根最低价之外。做空对称。"
         ),
         (
             "全仓：数量 = 权益 × 杠杆 / 进场价。"

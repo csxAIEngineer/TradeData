@@ -2,7 +2,7 @@
 
 价格 R 和账户 R 是两个数。价格 R 只看价格距离。账户 R 看扣费后的盈亏
 除以这一笔全仓打到止损的现金亏损。杠杆是名义本金相对权益的倍数，仓位按它打满。
-账户 R 目标默认 3，是实验值。小于 3 仍然拒绝。
+账户 R 目标默认 1.618，是实验值。小于 1 仍然拒绝。
 """
 
 from __future__ import annotations
@@ -31,11 +31,12 @@ class SniperParams:
     ema_slow: int = 32
     ema_slope_bars: int = 1
     atr_length: int = 14
-    atr_median_window: int = 20
+    atr_percentile_window: int = 20
+    atr_percentile: float = 0.30
     stop_buffer_bps: float = 0.0
     equity: Decimal = Decimal("10000")
     leverage: float = 20.0
-    min_account_rr: float = 3.0
+    min_account_rr: float = 1.618
     fee_bps: float = 5.0
     slippage_bps: float = 2.0
 
@@ -64,16 +65,18 @@ class SniperParams:
             raise ValueError("ema_slope_bars 至少为 1")
         if self.atr_length < 2:
             raise ValueError("atr_length 至少为 2")
-        if self.atr_median_window < 3:
-            raise ValueError("atr_median_window 至少为 3")
+        if self.atr_percentile_window < 3:
+            raise ValueError("atr_percentile_window 至少为 3")
+        if not 0 < self.atr_percentile <= 1:
+            raise ValueError("atr_percentile 必须在 (0, 1] 内")
         if self.stop_buffer_bps < 0:
             raise ValueError("stop_buffer_bps 不能为负")
         if self.equity <= 0:
             raise ValueError("equity 必须为正")
         if self.leverage < 1:
             raise ValueError("leverage 至少为 1")
-        if self.min_account_rr < 3:
-            raise ValueError("min_account_rr 至少为 3")
+        if self.min_account_rr < 1:
+            raise ValueError("min_account_rr 至少为 1")
         if self.fee_bps < 0 or self.slippage_bps < 0:
             raise ValueError("费用和滑点不能为负")
 
@@ -82,6 +85,6 @@ def evaluated_params() -> SniperParams:
     """锁死的 v0。不要按回测成交改这些数。
 
     杠杆 20 是全仓名义：数量 = 权益 × 20 / 进场价。1 账户 R 是这仓打到止损的现金亏损，不是权益的固定比例。
-    账户 R 目标默认 3，是实验值。
+    账户 R 目标默认 1.618，是实验值。
     """
     return SniperParams()

@@ -57,7 +57,8 @@ def plan_trade(
         return None
     risk_cash = -stop_pnl
     leverage_used = qty * entry / params.equity
-    reward = q_cash(risk_cash * Decimal(str(params.min_account_rr)))
+    minimum = Decimal(str(params.min_account_rr))
+    reward = q_cash(risk_cash * minimum)
     target_fill = _solve_target_fill(side, entry, qty, reward, params.fee_bps)
     if target_fill is None:
         return None
@@ -68,15 +69,16 @@ def plan_trade(
         return None
     if side == "sell" and not target < entry < stop:
         return None
-    target, target_fill = _nudge(side, qty, entry, stop, target, exit_side, reward, params)
+    target, target_fill = _nudge(side, qty, entry, stop, target, exit_side, risk_cash, params)
     if target is None or target_fill is None:
         return None
     priced = target_fill - entry if side == "buy" else entry - target_fill
     if priced <= 0:
         return None
-    account_r = float(_pnl(side, qty, entry, target_fill, params.fee_bps) / risk_cash)
-    if account_r < params.min_account_rr:
+    achieved = _pnl(side, qty, entry, target_fill, params.fee_bps) / risk_cash
+    if achieved < minimum:
         return None
+    account_r = float(achieved)
     return TradePlan(
         side=side,
         qty=qty,
@@ -129,10 +131,11 @@ def _nudge(
     stop: Decimal,
     target: Decimal,
     exit_side: Side,
-    reward: Decimal,
+    risk_cash: Decimal,
     params: SniperParams,
 ) -> tuple[Decimal, Decimal] | tuple[None, None]:
-    """四舍五入可能让扣费后的盈亏差一截。往有利方向推，直到账户 R 够到，或放弃。"""
+    """四舍五入可能让账户 R 差一截。往有利方向推，直到比值够到，或放弃。"""
+    minimum = Decimal(str(params.min_account_rr))
     step = max(PRICE_QUANT, q_px(entry * Decimal("0.000001")))
     for _ in range(64):
         target_fill = _slip(target, exit_side, params.slippage_bps)
@@ -140,7 +143,7 @@ def _nudge(
             return None, None
         if side == "sell" and not target < entry < stop:
             return None, None
-        if _pnl(side, qty, entry, target_fill, params.fee_bps) >= reward:
+        if _pnl(side, qty, entry, target_fill, params.fee_bps) / risk_cash >= minimum:
             return target, target_fill
         target = q_px(target + step) if side == "buy" else q_px(target - step)
         if target <= 0:
