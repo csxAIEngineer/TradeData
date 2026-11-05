@@ -1,8 +1,8 @@
-"""一击必杀 v0 的锁死参数。
+"""一击必杀 v0.1 的锁死参数。
 
-价格 R 和账户 R 是两个数。价格 R 只看价格距离。账户 R 看扣费后的盈亏
-除以这一笔全仓打到止损的现金亏损。杠杆是名义本金相对权益的倍数，仓位按它打满。
-账户 R 目标默认 3。小于 1 仍然拒绝，1 到 3 之间的实验值可以写上。
+价格 R 只看价格距离。账户 R 看扣费后的盈亏除以这一笔打到止损的现金亏损。
+仓位是逐仓：占用保证金 = 权益 × margin_fraction，名义 = 保证金 × leverage。
+默认保证金比例 0.20，杠杆 20，名义是权益的 4 倍。账户 R 目标默认 3。
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ MACRO_FACTORS = ("dxy", "tips_10y", "hy_oas", "vix")
 
 @dataclass(frozen=True)
 class SniperParams:
-    """v0 的全部数字。``evaluated_params`` 返回这份默认值。"""
+    """v0.1 的全部数字。``evaluated_params`` 返回这份默认值。"""
 
     theta: float = 0.55
     macro_lookback: int = 63
@@ -28,7 +28,9 @@ class SniperParams:
     pivot_k: int = 2
     stop_buffer_bps: float = 0.0
     equity: Decimal = Decimal("10000")
-    leverage: float = 30.0
+    margin_mode: str = "isolated"
+    margin_fraction: float = 0.20
+    leverage: float = 20.0
     min_account_rr: float = 3.0
     fee_bps: float = 5.0
     slippage_bps: float = 2.0
@@ -54,6 +56,10 @@ class SniperParams:
             raise ValueError("stop_buffer_bps 不能为负")
         if self.equity <= 0:
             raise ValueError("equity 必须为正")
+        if self.margin_mode != "isolated":
+            raise ValueError("margin_mode 只能是 isolated，也就是逐仓")
+        if not 0 < self.margin_fraction <= 1:
+            raise ValueError("margin_fraction 必须在 (0, 1] 内")
         if self.leverage < 1:
             raise ValueError("leverage 至少为 1")
         if self.min_account_rr < 1:
@@ -63,9 +69,10 @@ class SniperParams:
 
 
 def evaluated_params() -> SniperParams:
-    """锁死的 v0。不要按回测成交改这些数。
+    """锁死的 v0.1。不要按回测成交改这些数。
 
-    杠杆 30 是全仓名义：数量 = 权益 × 30 / 进场价。1 账户 R 是这仓打到止损的现金亏损，不是权益的固定比例。
-    账户 R 目标默认 3。小于 1 的值拒绝，更大或介于 1 和 3 之间的实验值可以显式写上。
+    逐仓。保证金 = 权益 × 0.20，杠杆 20，数量 = 保证金 × 20 / 进场价。
+    1 账户 R 是这仓打到止损的现金亏损，不是权益的固定比例。
+    账户 R 目标默认 3。小于 1 的值拒绝。
     """
     return SniperParams()

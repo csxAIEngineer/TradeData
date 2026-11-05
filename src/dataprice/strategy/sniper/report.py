@@ -42,8 +42,9 @@ def format_sniper_report(result: SniperResult, params: SniperParams | None = Non
             "止损在这根最低价之外。做空对称。摆动高低点不开仓。刺破远端再收回不做。"
         ),
         (
-            "全仓：数量 = 权益 × 杠杆 / 进场价。"
-            f"权益 {params.equity}，杠杆 {params.leverage:g}，名义大约是权益的 {params.leverage:g} 倍。"
+            "逐仓：保证金 = 权益 × 保证金比例，数量 = 保证金 × 杠杆 / 进场价。"
+            f"权益 {params.equity}，保证金比例 {params.margin_fraction:g}，杠杆 {params.leverage:g}，"
+            f"名义大约是权益的 {params.margin_fraction * params.leverage:g} 倍。"
             "1 账户 R 是这仓打到止损的现金亏损，含两边手续费，不是权益的固定比例。"
             "价格 R 是目标距离除以止损距离，不含手续费。"
             f"目标按账户 R >= {params.min_account_rr:g} 来解。"

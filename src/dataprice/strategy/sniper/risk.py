@@ -1,6 +1,7 @@
-"""把信号收成一笔全仓计划。目标账户 R 解不出来，就返回 None。
+"""把信号收成一笔逐仓计划。目标账户 R 解不出来，就返回 None。
 
-数量 = 权益 × ``leverage`` / 进场成交价，再按数量精度四舍五入。名义本金就是这倍数，不是先按权益的固定比例切仓、再用杠杆当上限。
+数量 = 权益 × ``margin_fraction`` × ``leverage`` / 进场成交价，再按数量精度四舍五入。
+保证金只占权益的 ``margin_fraction``。杠杆只乘在这笔保证金上。
 
 1 账户 R = 这仓按止损成交价平掉时的现金亏损，含进场和止损两边的手续费。
 价格 R = 目标成交价到进场成交价的距离 / 进场成交价到止损成交价的距离。不含手续费。
@@ -49,14 +50,17 @@ def plan_trade(
     price_risk = entry - stop_fill if side == "buy" else stop_fill - entry
     if price_risk <= 0 or entry <= 0 or stop <= 0:
         return None
-    qty = q_qty(params.equity * Decimal(str(params.leverage)) / entry)
+    margin = params.equity * Decimal(str(params.margin_fraction))
+    if margin <= 0:
+        return None
+    qty = q_qty(margin * Decimal(str(params.leverage)) / entry)
     if qty <= 0:
         return None
     stop_pnl = _pnl(side, qty, entry, stop_fill, params.fee_bps)
     if stop_pnl >= 0:
         return None
     risk_cash = -stop_pnl
-    leverage_used = qty * entry / params.equity
+    leverage_used = qty * entry / margin
     minimum = Decimal(str(params.min_account_rr))
     reward = q_cash(risk_cash * minimum)
     target_fill = _solve_target_fill(side, entry, qty, reward, params.fee_bps)
