@@ -1,4 +1,4 @@
-"""主动成交解析和扫流动性过滤。不访问网络，也不写 ClickHouse。"""
+"""Binance 主动成交归档的解析和回补。不访问网络，也不写 ClickHouse。"""
 
 import hashlib
 import io
@@ -10,14 +10,8 @@ import pytest
 from dataprice.feed.binance_flow import archive_requests, parse_binance_kline_csv
 from dataprice.feed.flow_history import backfill_taker_flow, fetch_binance_taker_flow
 from dataprice.market.validate import validate_taker_flow
-from dataprice.strategy.flow import TakerBar, aggressor_confirms, imbalance, index_flow
-from dataprice.strategy.imbalance import find_zones
-from dataprice.strategy.liquidity import Level, LiquidityMap, Sweep
-from dataprice.strategy.candles import Candle
-from dataprice.strategy.signals import StrategyParams, entry_signals, flow_params, generate_signals
 
 UTC = timezone.utc
-T0 = datetime(2026, 1, 6, 8, 0, tzinfo=UTC)
 START = datetime(2026, 10, 20, tzinfo=UTC)
 END = datetime(2026, 10, 22, 12, tzinfo=UTC)
 
@@ -82,72 +76,6 @@ def test_parse_rejects_taker_buy_above_total_volume():
         )
         == []
     )
-
-
-def test_sell_side_sweep_needs_taker_selling():
-    sold = TakerBar(START, buy_volume=40, sell_volume=60)
-    bought = TakerBar(START, buy_volume=70, sell_volume=30)
-    assert imbalance(sold) == pytest.approx(-0.2)
-    assert aggressor_confirms("sell", sold, 0.1) is True
-    assert aggressor_confirms("sell", bought, 0.1) is False
-    assert aggressor_confirms("buy", bought, 0.1) is True
-    assert aggressor_confirms("sell", None, 0.1) is False
-    flat = TakerBar(START, buy_volume=0, sell_volume=0)
-    assert aggressor_confirms("sell", flat, 0.0) is False
-
-
-def test_entry_drops_a_sweep_without_agreeing_flow():
-    candles = _candles(_long_rows())
-    bull = tuple("bull" for _ in candles)
-    sell_side = Level("eql", "sell", 98.0, 0)
-    buy_side = Level("eqh", "buy", 112.0, 0)
-    sweep = Sweep(5, "sell", sell_side, 97.0)
-    liquidity = LiquidityMap((sell_side, buy_side), (sweep,))
-    zones = find_zones(candles)
-    params = StrategyParams(min_flow_imbalance=0.1)
-    kept = entry_signals(
-        candles,
-        bias_30=bull,
-        bias_1h=bull,
-        liquidity=liquidity,
-        zones=zones,
-        params=params,
-        flow_at=index_flow([TakerBar(candles[5].open_ts, 40, 60)]),
-    )
-    assert len(kept) == 1
-    assert (
-        entry_signals(
-            candles,
-            bias_30=bull,
-            bias_1h=bull,
-            liquidity=liquidity,
-            zones=zones,
-            params=params,
-            flow_at=index_flow([TakerBar(candles[5].open_ts, 70, 30)]),
-        )
-        == []
-    )
-    assert (
-        entry_signals(
-            candles,
-            bias_30=bull,
-            bias_1h=bull,
-            liquidity=liquidity,
-            zones=zones,
-            params=params,
-            flow_at={},
-        )
-        == []
-    )
-
-
-def test_generate_signals_requires_flow_when_the_filter_is_on():
-    candles = _candles(_structure_rows())
-    higher = _candles([(9, 16, 7, 12)], start=T0, minutes=60)
-    with pytest.raises(ValueError, match="主动成交"):
-        generate_signals(candles, higher, StrategyParams(wing=1, min_flow_imbalance=0.1))
-    assert flow_params().min_flow_imbalance == 0.0
-    assert flow_params().liquidity_kinds == ("eqh", "eql")
 
 
 def test_fetch_skips_unpublished_day_and_checks_the_hash():
@@ -225,41 +153,6 @@ def test_backfill_inserts_without_clickhouse():
     assert written == len(repo.rows)
     assert written >= 1
     assert {row.source for row in repo.rows} == {"binance-um"}
-
-
-def _candles(rows, start=T0, minutes=30):
-    return [
-        Candle(start + timedelta(minutes=minutes * index), open_, high, low, close, 1.0)
-        for index, (open_, high, low, close) in enumerate(rows)
-    ]
-
-
-def _long_rows():
-    return [
-        (100, 101, 99, 100),
-        (100, 101, 99, 100),
-        (100, 101, 99, 100),
-        (100, 101, 99, 100),
-        (100, 101, 99, 100),
-        (100, 101, 97, 100.5),
-        (100.5, 102, 100.2, 101.5),
-        (101.5, 105, 101.4, 104.5),
-        (104.5, 106, 103.2, 105.5),
-        (105.5, 106, 105, 105.2),
-        (105.2, 105.4, 103.0, 104.0),
-        (104, 113, 103.5, 111),
-    ]
-
-
-def _structure_rows():
-    return [
-        (9, 10, 8, 9),
-        (8, 11, 7, 8),
-        (11, 12, 9, 11),
-        (13, 14, 10, 13),
-        (12, 13, 11, 12),
-        (15, 16, 12, 15),
-    ]
 
 
 def _csv(ts: datetime, *, volume: str, buy: str, count: str = "1") -> str:

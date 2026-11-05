@@ -49,7 +49,7 @@ v1 整手只打一个结构目标，不拆仓：
 
 止损在昨日极值外面，缓冲是价值区宽度的 0.1 倍。多头是 `昨日最低 − 0.1 × (VAH − VAL)`，空头是 `昨日最高 + 0.1 × (VAH − VAL)`。
 
-从下一根才看出场。同一根先碰到止损（开盘跳过止损就按开盘价）就按止损出，这根不再给止盈。止盈按目标价成交，开盘跳过目标也不按更好的开盘价成交。这和仓库里 ICT 回测的假设一样。
+从下一根才看出场。同一根先碰到止损（开盘跳过止损就按开盘价）就按止损出，这根不再给止盈。止盈按目标价成交，开盘跳过目标也不按更好的开盘价成交。
 
 默认不持仓过 UTC 日。日终那根如果没打到止损或目标，就按它的收盘价平仓。`hold_overnight` 可以关掉这道，默认关。
 
@@ -62,7 +62,7 @@ v1 整手只打一个结构目标，不拆仓：
 
 ## 成本和切分
 
-每边手续费 5 个基点，每边不利滑点 2 个基点，每笔 0.01 BTC。没有资金费。这些和前面的 ICT 实验一样。
+每边手续费 5 个基点，每边不利滑点 2 个基点，每笔 0.01 BTC。没有资金费。
 
 参数都在 `tpo_vwap.evaluated_params()`。命令行上的 `--fee-bps` 和 `--slippage-bps` 只覆盖成本，不搜索止损、价值区或振幅倍数。切分用进场 K 线的开盘时间：早于 2026-03-01 是训练，从这一天起是留出。
 
@@ -71,11 +71,11 @@ v1 整手只打一个结构目标，不拆仓：
 ## 复现
 
 ```shell
-uv run dataprice backtest --tpo-vwap --symbol BTC-USDT --months 36 --fee-bps 5 --slippage-bps 2
+uv run dataprice backtest --symbol BTC-USDT --months 36 --fee-bps 5 --slippage-bps 2
 uv run pytest tests/test_tpo_vwap.py
 ```
 
-`--months 36` 从运行当日起往前大约 1080 天，能盖住这台机器上 2024-11-05 之后的 30 分钟线。`--tpo-vwap` 不和 `--baseline`、`--flow`、`--regime`、`--trend-regime`、`--grid`、`--long`、`--short-regime`、`--debate-daily`、`--anti-sweep`、`--buy-only` 一起用。
+`dataprice backtest` 只跑这套规则。`--months 36` 从运行当日起往前大约 1080 天，能盖住这台机器上 2024-11-05 之后的 30 分钟线。`--freq` 选 `30m`、`5m` 或 `10m`，默认 `30m`。
 
 ## 结果
 
@@ -114,8 +114,8 @@ K 线来自 `https://data.binance.vision/` 的现货月文件，当月还没封�
 
 ```shell
 uv run dataprice binance-backfill --symbol BTCUSDT --months 36 --freq 5m
-uv run dataprice backtest --tpo-vwap --symbol BTCUSDT --freq 5m --months 36 --fee-bps 5 --slippage-bps 2
-uv run dataprice backtest --tpo-vwap --symbol BTCUSDT --freq 10m --months 36 --fee-bps 5 --slippage-bps 2
+uv run dataprice backtest --symbol BTCUSDT --freq 5m --months 36 --fee-bps 5 --slippage-bps 2
+uv run dataprice backtest --symbol BTCUSDT --freq 10m --months 36 --fee-bps 5 --slippage-bps 2
 ```
 
 ### 5 分钟

@@ -22,7 +22,8 @@ make health
 make smoke       # 三个存储各做一轮读写
 make backfill    # 从 OKX 拉 BTC-USDT 的 30m 和 60m（1 小时）写入 market.bars
 make flow-backfill  # 从 Binance USD-M 拉 30m 主动买卖量写入 market.taker_flow
-make backtest    # 用已入库 K 线跑 ICT + SMC 回测
+make binance-backfill  # 从 Binance 现货拉 BTCUSDT 5m，并合成 10m
+make backtest    # 用已入库 K 线跑 TPO 价值区加当日 VWAP 收回
 make test        # 不连数据库的单元测试
 make down        # 停止容器，数据卷保留
 ```
@@ -35,30 +36,14 @@ uv run dataprice backfill --symbol BTC-USDT --months 24
 uv run dataprice backtest --symbol BTC-USDT --months 24
 ```
 
-`dataprice.strategy` 做 ICT + SMC：1 小时用 BOS/CHoCH 定偏向，30 分钟只做同向结构里、扫完逆向流动性之后回到 FVG 或订单块的单。`generate_signals` 不连数据库。这条回测不出图。
-
-`make backtest` 跑的是评估候选（4 小时同向、只做等高/等低、止损不超过 80 个基点、限价进在失衡近端），默认每边 5 个基点手续费和 2 个基点滑点。最初的宽松规则用 `uv run dataprice backtest --baseline --fee-bps 0 --slippage-bps 0`。结论写在 `doc/ict_smc_evaluation.md`：全样本在这套费用下略赚，2026-03 之后的留出样本不赚。
-
-主动成交过滤要先 `make flow-backfill`，再 `uv run dataprice backtest --flow`。OKX 公开接口没有这条回测窗口的历史盘口和爆仓明细，入库的是 Binance USD-M 30 分钟主动买卖量。对照写在 `doc/ict_smc_flow.md`。
-
-`uv run dataprice backtest --regime` 在评估候选上再要求大约三天的 4 小时效率比至少 0.25。`uv run dataprice backtest --trend-regime` 再加上「4 小时偏多只做多、偏空只做空、中性不做」。评估候选本来就要求 4 小时偏向和方向一致，所以这两条在这条候选上是同一套成交。留出样本的多空都还在亏。说明写在 `doc/ict_smc_regime.md`。
-
-`uv run dataprice backtest --grid` 只在同一条 4 小时效率比低于 0.25 时做震荡网格，等于或高于 0.25 就空仓。网格用等高/等低当区间，没有成对水位就用最近上下沿。它有仓位上限、固定间距、收盘破位止损和库存浮亏停机，不改 `evaluated_params()`。费用仍是每边 5 个基点手续费和 2 个基点不利滑点。说明在 `doc/grid_chop.md`。
-
-`uv run dataprice backtest --buy-only` 是评估候选只做多。`uv run dataprice backtest --long` 在这上面要求扫卖侧那根的收盘落在高低区间的 70% 以上。这道门槛只在训练窗口里锁定。留出样本的多头打平，不是已经证实的优势。说明写在 `doc/ict_smc_long.md`。
-
-`uv run dataprice backtest --short-regime` 只对空头套用同一道效率比，多头仍是评估候选。日线偏空才做空的规则在训练里没有通过笔数和盈亏门槛，没有拿来当候选。留出样本的空头还是亏的。说明写在 `doc/ict_smc_short.md`。
-
-`uv run dataprice backtest --debate-daily` 在每根已收盘的 UTC 日线上，用当时已经知道的 4 小时效率比和结构，给下一日指定 long、short、grid 或 flat。三条猎手的默认参数不改，留出样本也不再调 0.25、CLV 0.70 和强区间。说明在 `doc/debate_daily.md`。
-
-`uv run dataprice backtest --anti-sweep` 用评估候选的同一份进场，把方向对调：扫等低做空，扫等高做多。止损放在反转单的止盈，止盈放在扫流动性的影线。`evaluated_params()` 和 `long_params()` 的默认值不改，也不在 2026 年的成交上重选参数。2026-03 之后延续单比反转少亏，盈亏比仍低于 1；训练窗口里反转更好。说明在 `doc/anti_sweep_continuation.md`。
+`dataprice backtest` 只跑 TPO 价值区加当日 VWAP 收回。参数锁在 `tpo_vwap.evaluated_params()`，命令行只覆盖手续费、滑点和周期（`30m`、`5m`、`10m`）。判断本身不连数据库。样本和规则写在 `doc/tpo_vwap_mikilab.md`。5 分钟和 10 分钟要先 `make binance-backfill`。`market.taker_flow` 仍由 `make flow-backfill` 写入，回测不再读它。
 
 代码按层分开：
 
 dataprice.hotpath：内存里的持仓、额度和出站队列。evaluate / apply_fill 没有数据库调用。
 dataprice.session：开盘前把 PostgreSQL 快照载入内存，另一个线程把成交写回账本。
 dataprice.market：ClickHouse 的 K 线和逐笔。缓冲满了会拒绝继续堆数据，避免策略线程被落盘堵住。
-dataprice.strategy：ICT + SMC + 流动性信号。判断本身不读库，回测再从 market.bars 取 30m 和 60m。
+dataprice.strategy：TPO 价值区加当日 VWAP 收回。判断本身不读库，回测再从 market.bars 取 K 线。
 dataprice.factors：ArcticDB 因子面板。factor_xs 是一个因子、多标的；factor_ts 是一个标的、多因子。write 返回版本号，回测要用这个版本号或写入时刻做 as_of。
 dataprice.ledger：账户、资金流水、持仓、风控限额、订单、成交、策略参数和角色。
 行情表按 Asia/Shanghai 的月份分区，排序键是周期、标的、交易所时间。交易所时间、本地接收时间、入库时间分开存。财务类因子的索引要用公告变得可知的时间。

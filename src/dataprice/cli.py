@@ -36,67 +36,20 @@ def main(argv: list[str] | None = None) -> None:
     spot.add_argument("--symbol", default="BTCUSDT")
     spot.add_argument("--months", type=int, default=36, help="大约 30 天算一个月，默认 36")
     spot.add_argument("--freq", default="5m", help="只支持 5m。10m 由完整的两根 5m 合成后一起写入")
-    backtest = sub.add_parser("backtest", help="用 market.bars 跑回测。ICT 用 30m/60m；--tpo-vwap 还可选 5m/10m")
+    backtest = sub.add_parser(
+        "backtest",
+        help="用 market.bars 跑 TPO 价值区加当日 VWAP 收回",
+        description="用 market.bars 跑 TPO 价值区加当日 VWAP 收回。参数锁在 tpo_vwap.evaluated_params()。",
+    )
     backtest.add_argument("--symbol", default="BTC-USDT")
     backtest.add_argument("--months", type=int, default=24, help="回测窗口，大约 30 天算一个月")
     backtest.add_argument(
         "--freq",
         default="30m",
-        help="只和 --tpo-vwap 一起用：30m、5m 或 10m。默认 30m",
+        help="30m、5m 或 10m。默认 30m",
     )
     backtest.add_argument("--fee-bps", type=float, default=5.0, help="每边手续费，基点。默认 5")
     backtest.add_argument("--slippage-bps", type=float, default=2.0, help="每边不利滑点，基点。默认 2")
-    backtest.add_argument("--baseline", action="store_true", help="用最初的宽松规则，而不是评估候选")
-    backtest.add_argument(
-        "--flow",
-        action="store_true",
-        help="在评估候选上再要求扫流动性那根的主动成交同向",
-    )
-    backtest.add_argument(
-        "--regime",
-        action="store_true",
-        help="在评估候选上再要求大约三天的 4 小时效率比至少 0.25",
-    )
-    backtest.add_argument(
-        "--trend-regime",
-        action="store_true",
-        help="猴市不做；4 小时偏多只做多，偏空只做空，中性不做",
-    )
-    backtest.add_argument(
-        "--grid",
-        action="store_true",
-        help="只在 4 小时效率比低于 0.25 时做震荡网格，不跑趋势候选",
-    )
-    backtest.add_argument(
-        "--long",
-        action="store_true",
-        help="只做多，并要求扫卖侧那根的收盘落在高低区间的 70%% 以上",
-    )
-    backtest.add_argument(
-        "--buy-only",
-        action="store_true",
-        help="同一套规则只保留多头。可以和其它画像一起用，--long 本身已经只做多",
-    )
-    backtest.add_argument(
-        "--short-regime",
-        action="store_true",
-        help="只对空头要求大约三天的 4 小时效率比至少 0.25，多头仍是评估候选",
-    )
-    backtest.add_argument(
-        "--debate-daily",
-        action="store_true",
-        help="按已收盘日线在 long、short、grid、flat 里选一个，当天不再改",
-    )
-    backtest.add_argument(
-        "--anti-sweep",
-        action="store_true",
-        help="扫完等高/等低后顺着扫的方向做。进场仍是评估候选，只对调方向，不改 evaluated_params()",
-    )
-    backtest.add_argument(
-        "--tpo-vwap",
-        action="store_true",
-        help="上一完整 UTC 日的 TPO 价值区加当日 VWAP 收回。参数锁在 tpo_vwap.evaluated_params()，不搜索",
-    )
     args = parser.parse_args(argv)
     if args.command == "bootstrap":
         from dataprice.bootstrap import bootstrap
@@ -169,169 +122,37 @@ def main(argv: list[str] | None = None) -> None:
         from dataclasses import replace
         from datetime import datetime, timedelta
 
-        from dataprice.strategy.backtest import format_report, run_stored_backtest
-        from dataprice.strategy.signals import (
-            StrategyParams,
-            evaluated_params,
-            flow_params,
-            long_params,
-            regime_params,
-            short_regime_params,
-            trend_regime_params,
+        from dataprice.strategy.tpo_vwap import (
+            TPO_FREQ_MINUTES,
+            evaluated_params as tpo_vwap_evaluated_params,
+            format_tpo_vwap_report,
+            run_stored_tpo_vwap,
         )
         from dataprice.timeutil import UTC
 
-        chosen = [
-            name
-            for name in (
-                "baseline",
-                "flow",
-                "regime",
-                "trend_regime",
-                "grid",
-                "long",
-                "short_regime",
-                "debate_daily",
-                "anti_sweep",
-                "tpo_vwap",
-            )
-            if getattr(args, name)
-        ]
-        if len(chosen) > 1:
-            parser.error(
-                "--baseline、--flow、--regime、--trend-regime、--grid、--long、"
-                "--short-regime、--debate-daily、--anti-sweep、--tpo-vwap 只能选一个"
-            )
-        if args.freq != "30m" and not args.tpo_vwap:
-            parser.error("--freq 只和 --tpo-vwap 一起用")
+        tpo_freq = args.freq.strip().lower()
+        if tpo_freq not in TPO_FREQ_MINUTES:
+            parser.error(f"backtest 只支持 5m、10m、30m，收到 {args.freq}")
         end = datetime.now(UTC)
         start = end - timedelta(days=args.months * 30)
-        if args.tpo_vwap:
-            if args.buy_only:
-                parser.error("--tpo-vwap 不和 --buy-only 一起用")
-            from dataprice.strategy.tpo_vwap import (
-                TPO_FREQ_MINUTES,
-                evaluated_params as tpo_vwap_evaluated_params,
-                format_tpo_vwap_report,
-                run_stored_tpo_vwap,
-            )
-
-            tpo_freq = args.freq.strip().lower()
-            if tpo_freq not in TPO_FREQ_MINUTES:
-                parser.error(f"--tpo-vwap 只支持 5m、10m、30m，收到 {args.freq}")
-            tpo_params = replace(
-                tpo_vwap_evaluated_params(),
-                fee_bps=args.fee_bps,
-                slippage_bps=args.slippage_bps,
-                bar_minutes=TPO_FREQ_MINUTES[tpo_freq],
-            )
-            try:
-                tpo = run_stored_tpo_vwap(
-                    symbol=args.symbol,
-                    start=start,
-                    end=end,
-                    params=tpo_params,
-                    freq=tpo_freq,
-                )
-            except (RuntimeError, ValueError) as exc:
-                parser.error(str(exc))
-            logging.info("%s %s %s 根", args.symbol, tpo_freq, tpo.bars)
-            for line in format_tpo_vwap_report(tpo, tpo_params).splitlines():
-                logging.info("%s", line)
-            return
-        if args.anti_sweep:
-            if args.buy_only:
-                parser.error("--anti-sweep 不和 --buy-only 一起用")
-            from dataprice.strategy.backtest import format_anti_sweep_report, run_stored_anti_sweep
-
-            try:
-                anti = run_stored_anti_sweep(
-                    symbol=args.symbol,
-                    start=start,
-                    end=end,
-                    fee_bps=args.fee_bps,
-                    slippage_bps=args.slippage_bps,
-                )
-            except RuntimeError as exc:
-                parser.error(str(exc))
-            logging.info("%s 30m %s 根，60m %s 根", args.symbol, anti.bars_30, anti.bars_60)
-            for line in format_anti_sweep_report(
-                anti,
-                fee_bps=args.fee_bps,
-                slippage_bps=args.slippage_bps,
-            ).splitlines():
-                logging.info("%s", line)
-            return
-        if args.debate_daily:
-            if args.buy_only:
-                parser.error("--debate-daily 不和 --buy-only 一起用")
-            from dataprice.strategy.debate import format_debate_report, run_stored_debate
-
-            try:
-                debate_result, bars_30, bars_60 = run_stored_debate(
-                    symbol=args.symbol,
-                    start=start,
-                    end=end,
-                    fee_bps=args.fee_bps,
-                    slippage_bps=args.slippage_bps,
-                )
-            except RuntimeError as exc:
-                parser.error(str(exc))
-            logging.info("%s 30m %s 根，60m %s 根", args.symbol, bars_30, bars_60)
-            for line in format_debate_report(
-                debate_result,
-                fee_bps=args.fee_bps,
-                slippage_bps=args.slippage_bps,
-            ).splitlines():
-                logging.info("%s", line)
-            return
-        if args.grid:
-            from dataprice.strategy.grid import GridParams, format_grid_report, run_stored_grid
-
-            grid_params = GridParams(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
-            try:
-                grid_result, bars_30, bars_60 = run_stored_grid(
-                    symbol=args.symbol,
-                    start=start,
-                    end=end,
-                    params=grid_params,
-                )
-            except RuntimeError as exc:
-                parser.error(str(exc))
-            logging.info("%s 30m %s 根，60m %s 根", args.symbol, bars_30, bars_60)
-            for line in format_grid_report(grid_result, grid_params).splitlines():
-                logging.info("%s", line)
-            return
-        if args.baseline:
-            params = StrategyParams()
-        elif args.flow:
-            params = flow_params()
-        elif args.regime:
-            params = regime_params()
-        elif args.trend_regime:
-            params = trend_regime_params()
-        elif args.long:
-            params = long_params()
-        elif args.short_regime:
-            params = short_regime_params()
-        else:
-            params = evaluated_params()
-        if args.buy_only:
-            params = replace(params, sides=("buy",))
+        tpo_params = replace(
+            tpo_vwap_evaluated_params(),
+            fee_bps=args.fee_bps,
+            slippage_bps=args.slippage_bps,
+            bar_minutes=TPO_FREQ_MINUTES[tpo_freq],
+        )
         try:
-            result, bars_30, bars_60 = run_stored_backtest(
+            tpo = run_stored_tpo_vwap(
                 symbol=args.symbol,
                 start=start,
                 end=end,
-                params=params,
-                fee_bps=args.fee_bps,
-                slippage_bps=args.slippage_bps,
+                params=tpo_params,
+                freq=tpo_freq,
             )
-        except RuntimeError as exc:
+        except (RuntimeError, ValueError) as exc:
             parser.error(str(exc))
-        logging.info("%s 30m %s 根，60m %s 根", args.symbol, bars_30, bars_60)
-        split = datetime(2026, 3, 1, tzinfo=UTC)
-        for line in format_report(result, split=split).splitlines():
+        logging.info("%s %s %s 根", args.symbol, tpo_freq, tpo.bars)
+        for line in format_tpo_vwap_report(tpo, tpo_params).splitlines():
             logging.info("%s", line)
     else:
         parser.error(args.command)

@@ -1,59 +1,13 @@
-"""策略用的 K 线。只有价格和时间，不连数据库。"""
+"""K 线。只有价格和时间，不连数据库。TPO 回测从 ``market.bars`` 读入。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Sequence
+from datetime import datetime
 
 import pandas as pd
 
-from dataprice.contracts import Bar
-from dataprice.timeutil import UTC, ensure_aware
-
-FREQ_MINUTES = {"30m": 30, "60m": 60, "4h": 240, "1d": 1440}
-
-
-def bar_delta(freq: str) -> timedelta:
-    try:
-        minutes = FREQ_MINUTES[freq]
-    except KeyError as exc:
-        raise ValueError(f"策略周期只支持 30m、60m、4h 和 1d，收到 {freq}") from exc
-    return timedelta(minutes=minutes)
-
-
-def aggregate_candles(candles: Sequence[Candle], freq: str) -> list[Candle]:
-    """把更细的 K 线收成 ``freq``。没走完的最后一根不输出，避免用未收盘价格。"""
-    width = bar_delta(freq)
-    hours = int(width.total_seconds() // 3600)
-    if hours < 1:
-        raise ValueError("只能往上合成整小时周期")
-    buckets: dict[datetime, list[Candle]] = {}
-    order: list[datetime] = []
-    for candle in candles:
-        ts = candle.open_ts.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
-        key = ts.replace(hour=(ts.hour // hours) * hours)
-        if key not in buckets:
-            buckets[key] = []
-            order.append(key)
-        buckets[key].append(candle)
-    out: list[Candle] = []
-    for key in order:
-        group = buckets[key]
-        last = group[-1].open_ts.astimezone(UTC)
-        if last < key + width - timedelta(hours=1):
-            continue
-        out.append(
-            Candle(
-                open_ts=key,
-                open=group[0].open,
-                high=max(item.high for item in group),
-                low=min(item.low for item in group),
-                close=group[-1].close,
-                volume=sum(item.volume for item in group),
-            )
-        )
-    return out
+from dataprice.timeutil import ensure_aware
 
 
 @dataclass(frozen=True)
@@ -75,23 +29,6 @@ class Candle:
             raise ValueError("open/close 超出 high/low")
         if self.volume < 0:
             raise ValueError("volume 不能为负")
-
-    def close_ts(self, freq: str) -> datetime:
-        return self.open_ts + bar_delta(freq)
-
-
-def candles_from_bars(bars: list[Bar] | tuple[Bar, ...]) -> list[Candle]:
-    return [
-        Candle(
-            open_ts=bar.exchange_ts,
-            open=bar.open,
-            high=bar.high,
-            low=bar.low,
-            close=bar.close,
-            volume=bar.volume,
-        )
-        for bar in bars
-    ]
 
 
 def candles_from_frame(frame: pd.DataFrame) -> list[Candle]:

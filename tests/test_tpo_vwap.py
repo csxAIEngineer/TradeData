@@ -319,16 +319,30 @@ def test_report_splits_train_and_holdout_on_entry_open_time():
     assert "95%" in text
 
 
-def test_cli_exposes_tpo_vwap_and_rejects_a_second_strategy(capsys):
+def test_cli_backtest_is_tpo_vwap_only(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["backtest", "--help"])
     assert exc.value.code == 0
-    assert "--tpo-vwap" in capsys.readouterr().out
+    help_text = capsys.readouterr().out
+    assert "TPO" in help_text
+    assert "--freq" in help_text
+    for flag in (
+        "--tpo-vwap",
+        "--anti-sweep",
+        "--grid",
+        "--debate-daily",
+        "--regime",
+        "--baseline",
+        "--flow",
+        "--long",
+        "--buy-only",
+    ):
+        assert flag not in help_text
     with pytest.raises(SystemExit) as exc:
-        main(["backtest", "--tpo-vwap", "--anti-sweep"])
+        main(["backtest", "--anti-sweep"])
     assert exc.value.code == 2
     with pytest.raises(SystemExit) as exc:
-        main(["backtest", "--freq", "5m"])
+        main(["backtest", "--freq", "1h"])
     assert exc.value.code == 2
     with pytest.raises(SystemExit) as help_exc:
         main(["--help"])
