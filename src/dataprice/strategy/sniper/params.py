@@ -2,7 +2,7 @@
 
 价格 R 和账户 R 是两个数。价格 R 只看价格距离。账户 R 看扣费后的盈亏
 除以这一笔全仓打到止损的现金亏损。杠杆是名义本金相对权益的倍数，仓位按它打满。
-账户 R 目标默认 1.618，是实验值。小于 1 仍然拒绝。
+账户 R 目标默认 3。小于 1 仍然拒绝，1 到 3 之间的实验值可以写上。
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ class SniperParams:
     stop_buffer_bps: float = 0.0
     equity: Decimal = Decimal("10000")
     leverage: float = 20.0
-    min_account_rr: float = 1.618
+    min_account_rr: float = 3.0
     fee_bps: float = 5.0
     slippage_bps: float = 2.0
 
@@ -85,6 +85,6 @@ def evaluated_params() -> SniperParams:
     """锁死的 v0。不要按回测成交改这些数。
 
     杠杆 20 是全仓名义：数量 = 权益 × 20 / 进场价。1 账户 R 是这仓打到止损的现金亏损，不是权益的固定比例。
-    账户 R 目标默认 1.618，是实验值。
+    账户 R 目标默认 3。小于 1 的值拒绝，更大或介于 1 和 3 之间的实验值可以显式写上。
     """
     return SniperParams()
