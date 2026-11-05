@@ -1,11 +1,12 @@
-"""把信号收成一笔计划。上不了配置里的账户 R，就返回 None。
+"""把信号收成一笔全仓计划。目标账户 R 解不出来，就返回 None。
 
-1 账户 R = 权益 × ``risk_fraction``。仓位按止损正好亏掉这 1R 来定，含手续费。
-需要的名义本金 / 权益 如果超过 ``leverage``，这笔目标在当前杠杆下够不着，跳过。
-不把仓位缩小后再把目标拉远。
+数量 = 权益 × ``leverage`` / 进场成交价，再按数量精度四舍五入。名义本金就是这倍数，不是先按权益的固定比例切仓、再用杠杆当上限。
 
+1 账户 R = 这仓按止损成交价平掉时的现金亏损，含进场和止损两边的手续费。
 价格 R = 目标成交价到进场成交价的距离 / 进场成交价到止损成交价的距离。不含手续费。
 账户 R = 扣掉两边手续费之后的盈亏 / 1 账户 R。目标价按账户 R = ``min_account_rr`` 来解。
+
+止损不在亏损一侧、打到止损并没有现金亏损、或做空目标价不是正数，就跳过。
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ def plan_trade(
     raw_stop: float,
     params: SniperParams,
 ) -> TradePlan | None:
-    """``raw_stop`` 已经是影线之外的触发价。返回 None 表示目标账户 R 够不着。"""
+    """``raw_stop`` 已经是影线之外的触发价。返回 None 表示目标账户 R 解不出来。"""
     entry_side: Side = side
     exit_side: Side = "sell" if side == "buy" else "buy"
     entry = _slip(_px(raw_entry), entry_side, params.slippage_bps)
@@ -48,18 +49,14 @@ def plan_trade(
     price_risk = entry - stop_fill if side == "buy" else stop_fill - entry
     if price_risk <= 0 or entry <= 0 or stop <= 0:
         return None
-    risk_cash = q_cash(params.equity * Decimal(str(params.risk_fraction)))
-    if risk_cash <= 0:
-        return None
-    unit_loss = price_risk + _fee_per_unit(entry, params.fee_bps) + _fee_per_unit(stop_fill, params.fee_bps)
-    if unit_loss <= 0:
-        return None
-    qty = q_qty(risk_cash / unit_loss)
+    qty = q_qty(params.equity * Decimal(str(params.leverage)) / entry)
     if qty <= 0:
         return None
-    leverage_used = qty * entry / params.equity
-    if leverage_used > Decimal(str(params.leverage)):
+    stop_pnl = _pnl(side, qty, entry, stop_fill, params.fee_bps)
+    if stop_pnl >= 0:
         return None
+    risk_cash = -stop_pnl
+    leverage_used = qty * entry / params.equity
     reward = q_cash(risk_cash * Decimal(str(params.min_account_rr)))
     target_fill = _solve_target_fill(side, entry, qty, reward, params.fee_bps)
     if target_fill is None:
@@ -165,12 +162,6 @@ def _fee(qty: Decimal, price: Decimal, fee_bps: float) -> Decimal:
         return Decimal("0")
     raw = qty * price * Decimal(str(fee_bps)) / Decimal("10000")
     return q_cash(raw)
-
-
-def _fee_per_unit(price: Decimal, fee_bps: float) -> Decimal:
-    if fee_bps <= 0:
-        return Decimal("0")
-    return price * Decimal(str(fee_bps)) / Decimal("10000")
 
 
 def _slip(price: Decimal, side: Side, slippage_bps: float) -> Decimal:

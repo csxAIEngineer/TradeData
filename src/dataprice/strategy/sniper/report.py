@@ -42,16 +42,18 @@ def format_sniper_report(result: SniperResult, params: SniperParams | None = Non
             f"不高于最近 {params.atr_median_window} 根（含本根）的中位数。止损在这根最低价之外。做空对称。"
         ),
         (
+            "全仓：数量 = 权益 × 杠杆 / 进场价。"
+            f"权益 {params.equity}，杠杆 {params.leverage:g}，名义大约是权益的 {params.leverage:g} 倍。"
+            "1 账户 R 是这仓打到止损的现金亏损，含两边手续费，不是权益的固定比例。"
             "价格 R 是目标距离除以止损距离，不含手续费。"
-            f"1 账户 R 是权益 {params.equity} 的 {params.risk_fraction:g}。"
-            f"目标按账户 R >= {params.min_account_rr:g} 来解，杠杆上限 {params.leverage:g}。"
-            "按这个风险把止损打满所需要的杠杆超过上限，就跳过，不缩小仓位。"
+            f"目标按账户 R >= {params.min_account_rr:g} 来解。"
+            "止损不在亏损一侧，或者目标价解不出来，就跳过。"
         ),
         "GATE=0 不平仓。偏向后来翻掉也不平。持仓直到止损或目标。最后一根还敞着的，按收盘记 end。",
         (
             f"费用每边 {params.fee_bps:g} bps，滑点每边 {params.slippage_bps:g} bps。"
             f"4H {result.bars} 根，{result.first_open:%Y-%m-%d %H:%M} → {result.last_open:%Y-%m-%d %H:%M}。"
-            f"平仓 {count}，其中风险够不着而跳过的设置 {result.skipped}。出场：{reason_text}。"
+            f"平仓 {count}，其中目标解不出来而跳过的设置 {result.skipped}。出场：{reason_text}。"
         ),
         "",
         "| 笔数 | 胜率 | 净盈亏 | 平均价格R | 平均账户R |",

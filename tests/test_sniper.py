@@ -47,7 +47,7 @@ def test_evaluated_params_stay_locked():
     assert locked.atr_median_window == 20
     assert locked.min_account_rr == 3
     assert locked.leverage == 20
-    assert locked.risk_fraction == 0.01
+    assert not hasattr(locked, "risk_fraction")
     assert locked.equity == Decimal("10000")
     assert SniperParams(min_account_rr=3).min_account_rr == 3
     assert SniperParams(min_account_rr=10).min_account_rr == 10
@@ -221,19 +221,26 @@ def test_ema_turn_needs_all_three_slopes_and_a_low_atr_ratio():
     assert find_ema_turn(locked_bars, 31, evaluated_params()) is None
 
 
-def test_three_account_r_is_exact_without_costs_and_skipped_when_leverage_cannot_fund_it():
+def test_full_notional_sizes_to_equity_times_leverage_and_three_account_r():
     plan = plan_trade("buy", 102, 98, _params())
     assert plan is not None
-    assert plan.qty == Decimal("25")
+    assert plan.qty == Decimal("1960.7843")
+    assert plan.qty * plan.entry == pytest.approx(Decimal("200000"), abs=Decimal("0.01"))
     assert plan.entry == Decimal("102")
     assert plan.stop == Decimal("98")
     assert plan.target == Decimal("114")
+    assert plan.risk_cash == Decimal("7843.1372")
     assert plan.planned_price_r == pytest.approx(3)
     assert plan.planned_account_r == pytest.approx(3)
-    assert plan.leverage_used == pytest.approx(0.255)
+    assert plan.leverage_used == pytest.approx(20)
+
+    five = plan_trade("buy", 102, 98, _params(leverage=5))
+    assert five is not None and five.qty == Decimal("490.1961")
+    assert five.leverage_used == pytest.approx(5)
 
     ten = plan_trade("buy", 102, 98, _params(min_account_rr=10))
     assert ten is not None
+    assert ten.qty == plan.qty
     assert ten.target == Decimal("142")
     assert ten.planned_account_r == pytest.approx(10)
 
@@ -242,10 +249,13 @@ def test_three_account_r_is_exact_without_costs_and_skipped_when_leverage_cannot
     assert costly.planned_account_r >= 3
     assert costly.planned_price_r > 3
     assert costly.entry > plan.entry
+    assert costly.risk_cash > plan.risk_cash
 
-    assert plan_trade("buy", 100.01, 99.99, _params(leverage=5)) is None
-    funded = plan_trade("buy", 100.01, 99.99, _params(leverage=60))
-    assert funded is not None and funded.planned_account_r >= 3
+    tight = plan_trade("buy", 100.01, 99.99, _params())
+    assert tight is not None
+    assert tight.qty == Decimal("1999.8000")
+    assert tight.leverage_used == pytest.approx(20)
+    assert tight.planned_account_r == pytest.approx(3)
     assert plan_trade("sell", 100, 140, _params()) is None
     assert plan_trade("sell", 100, 120, _params(min_account_rr=10)) is None
 
@@ -261,13 +271,14 @@ def test_long_target_short_target_and_stop():
     trade = result.trades[0]
     assert trade.reason == "target" and trade.side == "buy" and trade.bias == "long"
     assert trade.entry_ts == signal.open_ts
-    assert trade.pnl == q_cash(Decimal("300"))
+    assert trade.qty == Decimal("1960.7843")
+    assert trade.pnl == q_cash(Decimal("23529.4116"))
     assert trade.account_r == pytest.approx(3)
     assert trade.price_r == pytest.approx(3)
     assert trade.stop == Decimal("98")
     text = format_sniper_report(result, _params())
     assert "价格 R" in text and "账户 R" in text and "v0.1" in text
-    assert "EMA2" in text and "ATR3" in text and ">= 3" in text
+    assert "全仓" in text and "EMA2" in text and "ATR3" in text and ">= 3" in text
 
     stopped = run_sniper(
         _long_path(signal, _hour4(date(2026, 1, 12), 4, 102, 110, 90, 100)),
@@ -276,7 +287,7 @@ def test_long_target_short_target_and_stop():
         macro=macro,
     )
     assert stopped.trades[0].reason == "stop"
-    assert stopped.trades[0].pnl == q_cash(Decimal("-100"))
+    assert stopped.trades[0].pnl == q_cash(Decimal("-7843.1372"))
     assert stopped.trades[0].account_r == pytest.approx(-1)
 
     ended = run_sniper(
@@ -286,7 +297,7 @@ def test_long_target_short_target_and_stop():
         macro=macro,
     )
     assert ended.trades[0].reason == "end"
-    assert ended.trades[0].pnl == q_cash(Decimal("50"))
+    assert ended.trades[0].pnl == q_cash(Decimal("3921.5686"))
 
 
 def test_gate_blocks_entries_and_does_not_flatten():
@@ -342,10 +353,10 @@ def test_short_turn_reaches_three_account_r():
     trade = result.trades[0]
     assert trade.side == "sell" and trade.bias == "short" and trade.reason == "target"
     assert trade.entry_ts == signal.open_ts
-    assert trade.qty == Decimal("12.5")
+    assert trade.qty == Decimal("2061.8557")
     assert trade.stop == Decimal("105")
     assert trade.target == Decimal("73")
-    assert trade.pnl == q_cash(Decimal("300"))
+    assert trade.pnl == q_cash(Decimal("49484.5368"))
     assert trade.account_r == pytest.approx(3)
 
 
@@ -442,8 +453,7 @@ def test_sniper_backtest_is_its_own_command(capsys):
 def _params(**overrides: object) -> SniperParams:
     values: dict[str, object] = {
         "equity": Decimal("10000"),
-        "risk_fraction": 0.01,
-        "leverage": 5.0,
+        "leverage": 20.0,
         "min_account_rr": 3.0,
         "fee_bps": 0.0,
         "slippage_bps": 0.0,
