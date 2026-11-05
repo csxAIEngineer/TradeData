@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Iterator, Sequence
 
 import clickhouse_connect
@@ -220,6 +220,47 @@ class MarketRepository:
             },
         )
         return _localize(frame)
+
+    def insert_macro_daily(self, frame: pd.DataFrame) -> int:
+        if frame.empty:
+            return 0
+        self._client.insert_df("macro_daily", frame)
+        return len(frame)
+
+    def insert_factor_macro_gate(self, frame: pd.DataFrame) -> int:
+        if frame.empty:
+            return 0
+        self._client.insert_df("factor_macro_gate", frame)
+        return len(frame)
+
+    def query_macro_daily(self, start: date, end: date) -> pd.DataFrame:
+        """``end`` 不含。给 MacroGate 的原始日频。"""
+        return self._client.query_df(
+            """
+            SELECT series_id, obs_date, close, source
+            FROM macro_daily FINAL
+            WHERE obs_date >= {start:Date}
+              AND obs_date < {end:Date}
+            ORDER BY series_id, obs_date
+            """,
+            parameters={"start": start, "end": end},
+        )
+
+    def query_factor_macro_gate(self, version: str, start: date, end: date) -> pd.DataFrame:
+        """读合成的门。``end`` 不含。"""
+        return self._client.query_df(
+            """
+            SELECT version, effective_date, obs_date, score, gate,
+                   level_dxy, level_tips_10y, level_hy_oas, level_vix,
+                   component_dxy, component_tips_10y, component_hy_oas, component_vix
+            FROM factor_macro_gate FINAL
+            WHERE version = {version:String}
+              AND effective_date >= {start:Date}
+              AND effective_date < {end:Date}
+            ORDER BY effective_date
+            """,
+            parameters={"version": version, "start": start, "end": end},
+        )
 
     def delete_symbol(self, table: str, symbol: str) -> None:
         if table not in ("bars", "ticks", "quotes", "taker_flow"):

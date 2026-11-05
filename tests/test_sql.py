@@ -31,7 +31,7 @@ def test_clickhouse_migrations_run_in_filename_order():
     from dataprice.bootstrap import clickhouse_sql_files
 
     names = [path.name for path in clickhouse_sql_files()]
-    assert names == ["001_market.sql", "002_quotes.sql", "003_taker_flow.sql"]
+    assert names == ["001_market.sql", "002_quotes.sql", "003_taker_flow.sql", "004_macro.sql"]
     flow = "\n".join(read_sql(repo_root() / "sql" / "clickhouse" / "003_taker_flow.sql"))
     assert "CREATE TABLE IF NOT EXISTS market.taker_flow" in flow
     assert "buy_volume      Float64" in flow
@@ -50,3 +50,10 @@ def test_clickhouse_migrations_run_in_filename_order():
         "spread_bps      Float64",
     ):
         assert column in quotes
+    macro = "\n".join(read_sql(repo_root() / "sql" / "clickhouse" / "004_macro.sql"))
+    assert "CREATE TABLE IF NOT EXISTS market.macro_daily" in macro
+    assert "CREATE TABLE IF NOT EXISTS market.factor_macro_gate" in macro
+    assert "ORDER BY (series_id, obs_date)" in macro
+    assert "ORDER BY (version, effective_date)" in macro
+    assert "score               Nullable(Float64)" in macro
+    assert "gate                UInt8" in macro

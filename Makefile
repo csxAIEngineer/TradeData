@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install up down bootstrap smoke feed backfill flow-backfill binance-backfill backtest test health
+.PHONY: help install up down bootstrap smoke feed backfill flow-backfill binance-backfill backtest sniper-backtest macro-backfill test health
 
 help:
 	@printf '%s\n' \
@@ -14,6 +14,8 @@ help:
 		'make flow-backfill  从 Binance USD-M 拉 30m 主动买卖量写入 ClickHouse' \
 		'make binance-backfill  从 Binance 现货拉 BTCUSDT 5m，并合成 10m' \
 		'make backtest   用已入库 K 线跑 TPO+VWAP 回测' \
+		'make sniper-backtest  用 60m 和宏观门跑一击必杀' \
+		'make macro-backfill  提示宏观回补命令。日频用 CSV 或 --fetch' \
 		'make test       运行不依赖数据库的单元测试' \
 		'make down       停止容器，保留数据卷'
 
@@ -49,6 +51,15 @@ binance-backfill:
 
 backtest:
 	uv run dataprice backtest
+
+sniper-backtest:
+	uv run dataprice sniper-backtest
+
+macro-backfill:
+	@printf '%s\n' \
+		'宏观日频不在这个目标里直接拉。任选一条：' \
+		'  uv run dataprice macro-backfill --csv macro.csv' \
+		'  uv run dataprice macro-backfill --fetch'
 
 test:
 	uv run pytest

@@ -50,6 +50,30 @@ def main(argv: list[str] | None = None) -> None:
     )
     backtest.add_argument("--fee-bps", type=float, default=5.0, help="每边手续费，基点。默认 5")
     backtest.add_argument("--slippage-bps", type=float, default=2.0, help="每边不利滑点，基点。默认 2")
+    sniper = sub.add_parser(
+        "sniper-backtest",
+        help="用 60m 合成 4H，跑一击必杀 v0",
+        description=(
+            "一击必杀 v0。宏观门、日线偏向、4H 扫单收回。"
+            "参数锁在 sniper.evaluated_params()。命令行只覆盖手续费和滑点。"
+        ),
+    )
+    sniper.add_argument("--symbol", default="BTC-USDT")
+    sniper.add_argument("--months", type=int, default=24, help="回测窗口，大约 30 天算一个月")
+    sniper.add_argument("--fee-bps", type=float, default=5.0, help="每边手续费，基点。默认 5")
+    sniper.add_argument("--slippage-bps", type=float, default=2.0, help="每边不利滑点，基点。默认 2")
+    macro = sub.add_parser(
+        "macro-backfill",
+        help="写入 DXY、10Y TIPS、HY OAS、VIX，并合成 factor_macro_gate v0.1",
+        description="把四条日频写入 macro_daily，并合成 factor_macro_gate v0.1。",
+    )
+    macro_source = macro.add_mutually_exclusive_group(required=True)
+    macro_source.add_argument("--csv", help="series_id,obs_date,close。序列名是 dxy、tips_10y、hy_oas、vix")
+    macro_source.add_argument(
+        "--fetch",
+        action="store_true",
+        help="从 FRED 和 Yahoo 拉日频。拉不到就改用 --csv",
+    )
     args = parser.parse_args(argv)
     if args.command == "bootstrap":
         from dataprice.bootstrap import bootstrap
@@ -154,6 +178,51 @@ def main(argv: list[str] | None = None) -> None:
         logging.info("%s %s %s 根", args.symbol, tpo_freq, tpo.bars)
         for line in format_tpo_vwap_report(tpo, tpo_params).splitlines():
             logging.info("%s", line)
+    elif args.command == "sniper-backtest":
+        from dataclasses import replace
+        from datetime import datetime, timedelta
+
+        from dataprice.strategy.sniper.backtest import run_stored_sniper
+        from dataprice.strategy.sniper.params import evaluated_params as sniper_evaluated_params
+        from dataprice.strategy.sniper.report import format_sniper_report
+        from dataprice.timeutil import UTC
+
+        end = datetime.now(UTC)
+        start = end - timedelta(days=args.months * 30)
+        sniper_params = replace(
+            sniper_evaluated_params(),
+            fee_bps=args.fee_bps,
+            slippage_bps=args.slippage_bps,
+        )
+        try:
+            sniper_result = run_stored_sniper(
+                symbol=args.symbol,
+                start=start,
+                end=end,
+                params=sniper_params,
+            )
+        except (RuntimeError, ValueError) as exc:
+            parser.error(str(exc))
+        for line in format_sniper_report(sniper_result, sniper_params).splitlines():
+            logging.info("%s", line)
+    elif args.command == "macro-backfill":
+        from dataprice.strategy.sniper.fetch import fetch_macro_book
+        from dataprice.strategy.sniper.macro_gate import parse_macro_csv
+        from dataprice.strategy.sniper.store import write_macro
+
+        try:
+            if args.csv:
+                from pathlib import Path
+
+                book = parse_macro_csv(Path(args.csv).read_text(encoding="utf-8"))
+                source = "csv"
+            else:
+                book = fetch_macro_book()
+                source = "live"
+            daily_n, gate_n = write_macro(book, source)
+        except (OSError, RuntimeError, ValueError) as exc:
+            parser.error(str(exc))
+        logging.info("宏观日频 %s 行，factor_macro_gate v0.1 %s 行", daily_n, gate_n)
     else:
         parser.error(args.command)
 

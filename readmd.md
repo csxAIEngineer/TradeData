@@ -24,6 +24,7 @@ make backfill    # 从 OKX 拉 BTC-USDT 的 30m 和 60m（1 小时）写入 mark
 make flow-backfill  # 从 Binance USD-M 拉 30m 主动买卖量写入 market.taker_flow
 make binance-backfill  # 从 Binance 现货拉 BTCUSDT 5m，并合成 10m
 make backtest    # 用已入库 K 线跑 TPO 价值区加当日 VWAP 收回
+make sniper-backtest  # 用 60m 和宏观门跑一击必杀。先有 60m，再 macro-backfill
 make test        # 不连数据库的单元测试
 make down        # 停止容器，数据卷保留
 ```
@@ -38,12 +39,21 @@ uv run dataprice backtest --symbol BTC-USDT --months 24
 
 `dataprice backtest` 只跑 TPO 价值区加当日 VWAP 收回。参数锁在 `tpo_vwap.evaluated_params()`，命令行只覆盖手续费、滑点和周期（`30m`、`5m`、`10m`）。判断本身不连数据库。样本和规则写在 `doc/tpo_vwap_mikilab.md`。5 分钟和 10 分钟要先 `make binance-backfill`。`market.taker_flow` 仍由 `make flow-backfill` 写入，回测不再读它。
 
+一击必杀是另一条命令，不进 `dataprice backtest`。规则在 `doc/sniper_yiji_bisha.md`。判断本身不连数据库：
+
+```shell
+uv run pytest tests/test_sniper.py
+uv run dataprice backfill --symbol BTC-USDT --freq 60m --months 24
+uv run dataprice macro-backfill --csv macro.csv
+uv run dataprice sniper-backtest --symbol BTC-USDT --months 24
+```
+
 代码按层分开：
 
 dataprice.hotpath：内存里的持仓、额度和出站队列。evaluate / apply_fill 没有数据库调用。
 dataprice.session：开盘前把 PostgreSQL 快照载入内存，另一个线程把成交写回账本。
 dataprice.market：ClickHouse 的 K 线和逐笔。缓冲满了会拒绝继续堆数据，避免策略线程被落盘堵住。
-dataprice.strategy：TPO 价值区加当日 VWAP 收回。判断本身不读库，回测再从 market.bars 取 K 线。
+dataprice.strategy：TPO 价值区加当日 VWAP 收回，以及一击必杀。判断本身不读库。TPO 回测读 market.bars。一击必杀另外读宏观日频，自己合成 4H。
 dataprice.factors：ArcticDB 因子面板。factor_xs 是一个因子、多标的；factor_ts 是一个标的、多因子。write 返回版本号，回测要用这个版本号或写入时刻做 as_of。
 dataprice.ledger：账户、资金流水、持仓、风控限额、订单、成交、策略参数和角色。
 行情表按 Asia/Shanghai 的月份分区，排序键是周期、标的、交易所时间。交易所时间、本地接收时间、入库时间分开存。财务类因子的索引要用公告变得可知的时间。
