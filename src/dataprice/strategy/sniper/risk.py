@@ -1,7 +1,7 @@
-"""把扫单收成一笔计划。上不了配置里的 10 账户 R，就返回 None。
+"""把信号收成一笔计划。上不了配置里的账户 R，就返回 None。
 
 1 账户 R = 权益 × ``risk_fraction``。仓位按止损正好亏掉这 1R 来定，含手续费。
-需要的名义本金 / 权益 如果超过 ``leverage``，这笔 10R 在当前杠杆下够不着，跳过。
+需要的名义本金 / 权益 如果超过 ``leverage``，这笔目标在当前杠杆下够不着，跳过。
 不把仓位缩小后再把目标拉远。
 
 价格 R = 目标成交价到进场成交价的距离 / 进场成交价到止损成交价的距离。不含手续费。
@@ -39,7 +39,7 @@ def plan_trade(
     raw_stop: float,
     params: SniperParams,
 ) -> TradePlan | None:
-    """``raw_stop`` 已经是影线之外的触发价。返回 None 表示 10 账户 R 够不着。"""
+    """``raw_stop`` 已经是影线之外的触发价。返回 None 表示目标账户 R 够不着。"""
     entry_side: Side = side
     exit_side: Side = "sell" if side == "buy" else "buy"
     entry = _slip(_px(raw_entry), entry_side, params.slippage_bps)

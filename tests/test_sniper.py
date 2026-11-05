@@ -11,7 +11,7 @@ from dataprice.contracts import q_cash
 from dataprice.strategy.candles import Candle
 from dataprice.strategy.sniper.backtest import run_sniper, run_sniper_intraday
 from dataprice.strategy.sniper.bias import daily_bias, ema_close
-from dataprice.strategy.sniper.entry import find_sweep, stop_beyond_wick
+from dataprice.strategy.sniper.entry import entry_series, find_ema_turn, stop_beyond_wick
 from dataprice.strategy.sniper.fetch import parse_fred_csv, parse_yahoo_chart
 from dataprice.strategy.sniper.macro_gate import (
     GateCalendar,
@@ -36,16 +36,23 @@ def test_evaluated_params_stay_locked():
     assert locked.theta == 0.55
     assert locked.macro_version == "v0.1"
     assert locked.macro_lookback == 63
-    assert locked.swing_n == 20
     assert locked.ema_span == 50
     assert locked.structure_days == 20
     assert locked.pivot_k == 2
-    assert locked.min_account_rr == 10
+    assert locked.ema_fast == 6
+    assert locked.ema_mid == 12
+    assert locked.ema_slow == 32
+    assert locked.ema_slope_bars == 1
+    assert locked.atr_length == 14
+    assert locked.atr_median_window == 20
+    assert locked.min_account_rr == 3
     assert locked.leverage == 5
     assert locked.risk_fraction == 0.01
     assert locked.equity == Decimal("10000")
+    assert SniperParams(min_account_rr=3).min_account_rr == 3
+    assert SniperParams(min_account_rr=10).min_account_rr == 10
     with pytest.raises(ValueError):
-        SniperParams(min_account_rr=9)
+        SniperParams(min_account_rr=2.99)
     with pytest.raises(ValueError):
         SniperParams(macro_version="v0.2")
 
@@ -171,71 +178,99 @@ def test_hh_hl_still_needs_the_close_above_the_ema():
     assert daily_bias(lifted, params)[6].bias == "long"
 
 
-def test_sweep_reclaims_the_prior_extreme_and_stops_on_the_wick():
-    quiet = [_hour4(date(2026, 1, 9), hour, 105, 110, 100, 105) for hour in (12, 16, 20)]
-    reclaim = quiet + [_hour4(date(2026, 1, 12), 0, 100, 106, 98, 102)]
-    sweep = find_sweep(reclaim, 3, 3)
-    assert sweep is not None
-    assert sweep.side == "buy" and sweep.level == 100 and sweep.wick == 98
-    assert stop_beyond_wick(sweep, 0) == 98
-    assert stop_beyond_wick(sweep, 100) == pytest.approx(97.02)
+def test_ema_turn_needs_all_three_slopes_and_a_low_atr_ratio():
+    import dataprice.strategy.sniper.entry as entry
 
-    pierced = quiet + [_hour4(date(2026, 1, 12), 0, 100, 106, 98, 99)]
-    assert find_sweep(pierced, 3, 3) is None
-    untouched = quiet + [_hour4(date(2026, 1, 12), 0, 104, 108, 101, 106)]
-    assert find_sweep(untouched, 3, 3) is None
-    both = quiet + [_hour4(date(2026, 1, 12), 0, 105, 112, 97, 105)]
-    assert find_sweep(both, 3, 3) is None
+    assert not hasattr(entry, "find_sweep")
+    params = _params()
+    rising = _steady_bars(40, start=100, step=0.5)
+    signal = find_ema_turn(rising, 39, params)
+    assert signal is not None and signal.side == "buy"
+    series = entry_series(rising, params)
+    for span in (params.ema_fast, params.ema_mid, params.ema_slow):
+        assert series.emas[span][39] > series.emas[span][38]
+    assert signal.atr_ratio <= signal.median_ratio
+    assert signal.wick == rising[39].low
+    assert stop_beyond_wick(signal.side, signal.wick, 0) == signal.wick
+    assert stop_beyond_wick("buy", 98, 100) == pytest.approx(97.02)
+    assert stop_beyond_wick("sell", 105, 100) == pytest.approx(106.05)
 
-    deeper = [_hour4(date(2026, 1, 9), hour, 105, 110, 90, 105) for hour in (12, 16, 20)]
-    deeper.append(_hour4(date(2026, 1, 12), 0, 100, 106, 88, 102))
-    found = find_sweep(deeper, 3, 3)
-    assert found is not None and found.level == 90
+    stalled = list(rising)
+    stalled[39] = _replace_close(stalled[39], stalled[38].close - 5)
+    assert find_ema_turn(stalled, 39, params) is None
+
+    wide = list(rising)
+    last = wide[39]
+    wide[39] = Candle(last.open_ts, last.open, last.close + 40, last.low, last.close, 1)
+    assert find_ema_turn(wide, 39, params) is None
+
+    flat = _steady_bars(40, start=100, step=0)
+    assert find_ema_turn(flat, 39, params) is None
+    reclaim = flat[:20] + [_hour4(date(2026, 6, 1), 0, 100, 110, 90, 105)]
+    assert find_ema_turn(reclaim, len(reclaim) - 1, params) is None
+
+    falling = _compressed_decline(40)
+    short = find_ema_turn(falling, 39, params)
+    assert short is not None and short.side == "sell"
+    assert short.wick == falling[39].high
+    assert short.atr_ratio <= short.median_ratio
+
+    locked_bars = _steady_bars(40, start=100, step=0.5)
+    locked = find_ema_turn(locked_bars, 39, evaluated_params())
+    assert locked is not None and locked.side == "buy"
+    assert find_ema_turn(locked_bars, 31, evaluated_params()) is None
 
 
-def test_ten_account_r_is_exact_without_costs_and_skipped_when_leverage_cannot_fund_it():
+def test_three_account_r_is_exact_without_costs_and_skipped_when_leverage_cannot_fund_it():
     plan = plan_trade("buy", 102, 98, _params())
     assert plan is not None
     assert plan.qty == Decimal("25")
     assert plan.entry == Decimal("102")
     assert plan.stop == Decimal("98")
-    assert plan.target == Decimal("142")
-    assert plan.planned_price_r == pytest.approx(10)
-    assert plan.planned_account_r == pytest.approx(10)
+    assert plan.target == Decimal("114")
+    assert plan.planned_price_r == pytest.approx(3)
+    assert plan.planned_account_r == pytest.approx(3)
     assert plan.leverage_used == pytest.approx(0.255)
+
+    ten = plan_trade("buy", 102, 98, _params(min_account_rr=10))
+    assert ten is not None
+    assert ten.target == Decimal("142")
+    assert ten.planned_account_r == pytest.approx(10)
 
     costly = plan_trade("buy", 102, 98, _params(fee_bps=5, slippage_bps=2))
     assert costly is not None
-    assert costly.planned_account_r >= 10
-    assert costly.planned_price_r > 10
+    assert costly.planned_account_r >= 3
+    assert costly.planned_price_r > 3
     assert costly.entry > plan.entry
 
     assert plan_trade("buy", 100.01, 99.99, _params(leverage=5)) is None
     funded = plan_trade("buy", 100.01, 99.99, _params(leverage=60))
-    assert funded is not None and funded.planned_account_r >= 10
-    assert plan_trade("sell", 100, 120, _params()) is None
+    assert funded is not None and funded.planned_account_r >= 3
+    assert plan_trade("sell", 100, 140, _params()) is None
+    assert plan_trade("sell", 100, 120, _params(min_account_rr=10)) is None
 
 
 def test_long_target_short_target_and_stop():
     daily = _dailies([10, 20, 30, 40, 50])
     macro = _book([5, 4, 3, 2, 1])
-    quiet = [_hour4(date(2026, 1, 9), hour, 105, 110, 100, 105) for hour in (12, 16, 20)]
-    signal = _hour4(date(2026, 1, 12), 0, 100, 106, 98, 102)
+    signal = _hour4(date(2026, 1, 12), 0, 102, 106, 98, 102)
     target = _hour4(date(2026, 1, 12), 4, 102, 150, 101, 148)
-    result = run_sniper(quiet + [signal, target], daily, _params(), macro=macro)
+    result = run_sniper(_long_path(signal, target), daily, _params(), macro=macro)
     assert result.skipped == 0
     assert len(result.trades) == 1
     trade = result.trades[0]
     assert trade.reason == "target" and trade.side == "buy" and trade.bias == "long"
-    assert trade.pnl == q_cash(Decimal("1000"))
-    assert trade.account_r == pytest.approx(10)
-    assert trade.price_r == pytest.approx(10)
+    assert trade.entry_ts == signal.open_ts
+    assert trade.pnl == q_cash(Decimal("300"))
+    assert trade.account_r == pytest.approx(3)
+    assert trade.price_r == pytest.approx(3)
     assert trade.stop == Decimal("98")
     text = format_sniper_report(result, _params())
     assert "价格 R" in text and "账户 R" in text and "v0.1" in text
+    assert "EMA2" in text and "ATR3" in text and ">= 3" in text
 
     stopped = run_sniper(
-        quiet + [signal, _hour4(date(2026, 1, 12), 4, 102, 110, 90, 100)],
+        _long_path(signal, _hour4(date(2026, 1, 12), 4, 102, 110, 90, 100)),
         daily,
         _params(),
         macro=macro,
@@ -245,7 +280,7 @@ def test_long_target_short_target_and_stop():
     assert stopped.trades[0].account_r == pytest.approx(-1)
 
     ended = run_sniper(
-        quiet + [signal, _hour4(date(2026, 1, 12), 4, 103, 110, 99, 104)],
+        _long_path(signal, _hour4(date(2026, 1, 12), 4, 103, 110, 99, 104)),
         daily,
         _params(),
         macro=macro,
@@ -257,18 +292,21 @@ def test_long_target_short_target_and_stop():
 def test_gate_blocks_entries_and_does_not_flatten():
     daily = _dailies([10, 20, 30, 40, 50])
     params = _params()
-    quiet = [_hour4(date(2026, 1, 9), hour, 105, 110, 100, 105) for hour in (12, 16, 20)]
-    signal = _hour4(date(2026, 1, 12), 0, 100, 106, 98, 102)
-    closed = run_sniper(quiet + [signal, _hour4(date(2026, 1, 12), 4, 102, 150, 101, 148)], daily, params, macro=_book([1, 2, 3, 4, 5]))
+    signal = _hour4(date(2026, 1, 12), 0, 102, 106, 98, 102)
+    closed = run_sniper(
+        _long_path(signal, _hour4(date(2026, 1, 12), 4, 102, 150, 101, 148)),
+        daily,
+        params,
+        macro=_book([1, 2, 3, 4, 5]),
+    )
     assert closed.trades == ()
 
     held = run_sniper(
-        quiet
-        + [
+        _long_path(
             signal,
             _hour4(date(2026, 1, 13), 0, 103, 110, 99, 104),
             _hour4(date(2026, 1, 14), 0, 104, 160, 100, 150),
-        ],
+        ),
         daily,
         params,
         macro=_book([5, 4, 3, 2, 1, 100]),
@@ -286,10 +324,9 @@ def test_same_day_daily_close_cannot_authorize_the_same_day():
     rows = daily_bias(bars, params)
     assert rows[4].day == date(2026, 1, 9) and rows[4].bias == "flat"
     assert rows[5].day == date(2026, 1, 12) and rows[5].bias == "long"
-    quiet = [_hour4(date(2026, 1, 9), hour, 105, 110, 100, 105) for hour in (12, 16, 20)]
-    signal = _hour4(date(2026, 1, 12), 0, 100, 106, 98, 102)
+    signal = _hour4(date(2026, 1, 12), 0, 102, 106, 98, 102)
     result = run_sniper(
-        quiet + [signal, _hour4(date(2026, 1, 12), 4, 102, 150, 101, 148)],
+        _long_path(signal, _hour4(date(2026, 1, 12), 4, 102, 150, 101, 148)),
         bars,
         params,
         macro=_book([5, 4, 3, 2, 1]),
@@ -297,19 +334,19 @@ def test_same_day_daily_close_cannot_authorize_the_same_day():
     assert result.trades == ()
 
 
-def test_short_reclaim_reaches_ten_account_r():
+def test_short_turn_reaches_three_account_r():
     daily = _dailies([50, 40, 30, 20, 10])
-    quiet = [_hour4(date(2026, 1, 9), hour, 90, 100, 80, 90) for hour in (12, 16, 20)]
-    signal = _hour4(date(2026, 1, 12), 0, 99, 105, 90, 97)
+    signal = _hour4(date(2026, 1, 12), 0, 97, 105, 90, 97)
     target = _hour4(date(2026, 1, 12), 4, 90, 96, 10, 20)
-    result = run_sniper(quiet + [signal, target], daily, _params(), macro=_book([5, 4, 3, 2, 1]))
+    result = run_sniper(_short_path(signal, target), daily, _params(), macro=_book([5, 4, 3, 2, 1]))
     trade = result.trades[0]
     assert trade.side == "sell" and trade.bias == "short" and trade.reason == "target"
+    assert trade.entry_ts == signal.open_ts
     assert trade.qty == Decimal("12.5")
     assert trade.stop == Decimal("105")
-    assert trade.target == Decimal("17")
-    assert trade.pnl == q_cash(Decimal("1000"))
-    assert trade.account_r == pytest.approx(10)
+    assert trade.target == Decimal("73")
+    assert trade.pnl == q_cash(Decimal("300"))
+    assert trade.account_r == pytest.approx(3)
 
 
 def test_aggregate_drops_incomplete_buckets():
@@ -407,10 +444,15 @@ def _params(**overrides: object) -> SniperParams:
         "equity": Decimal("10000"),
         "risk_fraction": 0.01,
         "leverage": 5.0,
-        "min_account_rr": 10.0,
+        "min_account_rr": 3.0,
         "fee_bps": 0.0,
         "slippage_bps": 0.0,
-        "swing_n": 3,
+        "ema_fast": 2,
+        "ema_mid": 3,
+        "ema_slow": 4,
+        "ema_slope_bars": 1,
+        "atr_length": 3,
+        "atr_median_window": 3,
         "ema_span": 3,
         "structure_days": 3,
         "pivot_k": 1,
@@ -459,3 +501,58 @@ def _dailies(closes: list[float]) -> list[Candle]:
 
 def _hour4(day: date, hour: int, open_: float, high: float, low: float, close: float) -> Candle:
     return Candle(datetime(day.year, day.month, day.day, hour, tzinfo=UTC), open_, high, low, close, 1)
+
+
+def _steady_bars(count: int, *, start: float, step: float) -> list[Candle]:
+    opened = datetime(2026, 1, 1, tzinfo=UTC)
+    bars: list[Candle] = []
+    for index in range(count):
+        close = start + step * index
+        bars.append(Candle(opened + timedelta(hours=4 * index), close, close + 1, close - 1, close, 1))
+    return bars
+
+
+def _compressed_decline(count: int) -> list[Candle]:
+    """前面波幅大，最后几根收窄，下跌时 ATR/收盘 才能落到中位数上。"""
+    opened = datetime(2026, 1, 1, tzinfo=UTC)
+    bars: list[Candle] = []
+    for index in range(count):
+        close = 200 - 0.2 * index
+        width = 8 if index < count - 5 else 0.2
+        bars.append(
+            Candle(opened + timedelta(hours=4 * index), close, close + width, close - width, close, 1)
+        )
+    return bars
+
+
+def _replace_close(bar: Candle, close: float) -> Candle:
+    return Candle(bar.open_ts, close, close + 1, close - 1, close, 1)
+
+
+def _weekday_slots() -> list[tuple[date, int]]:
+    slots: list[tuple[date, int]] = []
+    for day in (date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7)):
+        for hour in (0, 4, 8, 12, 16, 20):
+            slots.append((day, hour))
+    return slots
+
+
+def _long_path(signal: Candle, *after: Candle) -> list[Candle]:
+    """1 月 5–7 日上涨暖机。那几天宏观点数不够，门是关的，真正进场落在信号这根。"""
+    bars: list[Candle] = []
+    slots = _weekday_slots()
+    for index, (day, hour) in enumerate(slots):
+        close = signal.close - (len(slots) - index)
+        bars.append(_hour4(day, hour, close, close + 4, close - 4, close))
+    return bars + [signal, *after]
+
+
+def _short_path(signal: Candle, *after: Candle) -> list[Candle]:
+    """下跌，并且靠近信号时把波幅收窄，ATR/收盘 才不高于自己的中位数。"""
+    bars: list[Candle] = []
+    slots = _weekday_slots()
+    for index, (day, hour) in enumerate(slots):
+        close = signal.close + (len(slots) - index)
+        width = 8 if index < 16 else 2
+        bars.append(_hour4(day, hour, close, close + width, close - width, close))
+    return bars + [signal, *after]

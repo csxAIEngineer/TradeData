@@ -25,7 +25,7 @@ def format_sniper_report(result: SniperResult, params: SniperParams | None = Non
     avg_price = sum(price_rs) / len(price_rs) if price_rs else 0.0
     count = len(result.trades)
     lines = [
-        "一击必杀 v0：宏观门只拦新开仓，日线定偏向，4H 扫到前低或前高再收回才进场。",
+        "一击必杀 v0：宏观门只拦新开仓，日线定偏向，4H 三条 EMA 同向转并且 ATR 处于低位才进场。",
         (
             f"MacroGate {params.macro_version}：DXY、10Y TIPS、HY OAS、VIX 等权。"
             f"因子不高于自己最近 {params.macro_lookback} 个收盘的中位数记 1，否则记 0。"
@@ -37,8 +37,9 @@ def format_sniper_report(result: SniperResult, params: SniperParams | None = Non
             f"{params.structure_days} 根日线的最高价，并且收盘在 EMA{params.ema_span} 之上。做空对称。没有偏向不做。"
         ),
         (
-            f"4H 做多：最低价刺破前 {params.swing_n} 根的最低价，收盘回到那条低点之上。"
-            "止损在这根影线之外。做空对称。同一根两边都扫到就放弃。"
+            f"4H 做多：EMA{params.ema_fast}、EMA{params.ema_mid}、EMA{params.ema_slow} "
+            f"都高于自己 {params.ema_slope_bars} 根之前的值，并且 ATR{params.atr_length}/收盘 "
+            f"不高于最近 {params.atr_median_window} 根（含本根）的中位数。止损在这根最低价之外。做空对称。"
         ),
         (
             "价格 R 是目标距离除以止损距离，不含手续费。"

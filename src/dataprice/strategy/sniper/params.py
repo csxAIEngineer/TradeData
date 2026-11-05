@@ -2,6 +2,7 @@
 
 价格 R 和账户 R 是两个数。价格 R 只看价格距离。账户 R 看扣费后的盈亏
 除以配置的风险预算。杠杆决定这笔 1 账户 R 的仓位能不能上，不上就跳过。
+账户 R 目标默认 3，是实验值。小于 3 仍然拒绝。
 """
 
 from __future__ import annotations
@@ -25,12 +26,17 @@ class SniperParams:
     ema_span: int = 50
     structure_days: int = 20
     pivot_k: int = 2
-    swing_n: int = 20
+    ema_fast: int = 6
+    ema_mid: int = 12
+    ema_slow: int = 32
+    ema_slope_bars: int = 1
+    atr_length: int = 14
+    atr_median_window: int = 20
     stop_buffer_bps: float = 0.0
     equity: Decimal = Decimal("10000")
     risk_fraction: float = 0.01
     leverage: float = 5.0
-    min_account_rr: float = 10.0
+    min_account_rr: float = 3.0
     fee_bps: float = 5.0
     slippage_bps: float = 2.0
 
@@ -51,8 +57,16 @@ class SniperParams:
             raise ValueError("structure_days 至少为 2")
         if self.pivot_k < 1:
             raise ValueError("pivot_k 至少为 1")
-        if self.swing_n < 2:
-            raise ValueError("swing_n 至少为 2")
+        if self.ema_fast < 2 or self.ema_mid < 2 or self.ema_slow < 2:
+            raise ValueError("进场 EMA 周期至少为 2")
+        if not self.ema_fast < self.ema_mid < self.ema_slow:
+            raise ValueError("进场 EMA 必须是快 < 中 < 慢")
+        if self.ema_slope_bars < 1:
+            raise ValueError("ema_slope_bars 至少为 1")
+        if self.atr_length < 2:
+            raise ValueError("atr_length 至少为 2")
+        if self.atr_median_window < 3:
+            raise ValueError("atr_median_window 至少为 3")
         if self.stop_buffer_bps < 0:
             raise ValueError("stop_buffer_bps 不能为负")
         if self.equity <= 0:
@@ -61,8 +75,8 @@ class SniperParams:
             raise ValueError("risk_fraction 必须在 (0, 1] 内")
         if self.leverage < 1:
             raise ValueError("leverage 至少为 1")
-        if self.min_account_rr < 10:
-            raise ValueError("min_account_rr 至少为 10")
+        if self.min_account_rr < 3:
+            raise ValueError("min_account_rr 至少为 3")
         if self.fee_bps < 0 or self.slippage_bps < 0:
             raise ValueError("费用和滑点不能为负")
 
@@ -70,6 +84,6 @@ class SniperParams:
 def evaluated_params() -> SniperParams:
     """锁死的 v0。不要按回测成交改这些数。
 
-    杠杆 5、单笔风险 1% 是配置，不是拟合出来的。账户 R 目标是 10。
+    杠杆 5、单笔风险 1% 是配置，不是拟合出来的。账户 R 目标默认 3，是实验值。
     """
     return SniperParams()
