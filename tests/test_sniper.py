@@ -46,7 +46,7 @@ def test_evaluated_params_stay_locked():
     assert locked.atr_length == 14
     assert locked.atr_median_window == 20
     assert locked.min_account_rr == 3
-    assert locked.leverage == 5
+    assert locked.leverage == 20
     assert locked.risk_fraction == 0.01
     assert locked.equity == Decimal("10000")
     assert SniperParams(min_account_rr=3).min_account_rr == 3

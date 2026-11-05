@@ -35,7 +35,7 @@ class SniperParams:
     stop_buffer_bps: float = 0.0
     equity: Decimal = Decimal("10000")
     risk_fraction: float = 0.01
-    leverage: float = 5.0
+    leverage: float = 20.0
     min_account_rr: float = 3.0
     fee_bps: float = 5.0
     slippage_bps: float = 2.0
@@ -84,6 +84,7 @@ class SniperParams:
 def evaluated_params() -> SniperParams:
     """锁死的 v0。不要按回测成交改这些数。
 
-    杠杆 5、单笔风险 1% 是配置，不是拟合出来的。账户 R 目标默认 3，是实验值。
+    杠杆 20、单笔风险 1% 是配置，不是拟合出来的。上限留到 20，是为了更紧的止损仍能按 1 账户 R 上仓。
+    账户 R 目标默认 3，是实验值。
     """
     return SniperParams()
