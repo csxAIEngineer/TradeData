@@ -11,7 +11,7 @@ from dataprice.contracts import q_cash
 from dataprice.strategy.candles import Candle
 from dataprice.strategy.sniper.backtest import run_sniper, run_sniper_intraday
 from dataprice.strategy.sniper.bias import daily_bias, ema_close
-from dataprice.strategy.sniper.entry import entry_series, find_ema_turn, inclusive_percentile, low_atr_ratio, stop_beyond_wick
+from dataprice.strategy.sniper.entry import entry_series, find_ema_turn, inclusive_percentile, stop_beyond_wick
 from dataprice.strategy.sniper.fetch import parse_fred_csv, parse_yahoo_chart
 from dataprice.strategy.sniper.macro_gate import (
     GateCalendar,
@@ -183,55 +183,48 @@ def test_hh_hl_still_needs_the_close_above_the_ema():
     assert daily_bias(lifted, params)[6].bias == "long"
 
 
-def test_entry_waits_for_an_ema_turn_that_breaks_the_compression_range():
+def test_ema_turn_needs_all_three_slopes_and_a_low_atr_ratio():
     import dataprice.strategy.sniper.entry as entry
 
     assert not hasattr(entry, "find_sweep")
     params = _params()
-    quiet = _steady_bars(40, start=100, step=0.2, width=1.0)
-    assert find_ema_turn(quiet, 39, params) is None
-    assert low_atr_ratio(entry_series(quiet, params), 38, params) is not None
-
-    breaking = list(quiet)
-    last = breaking[39]
-    breaking[39] = Candle(last.open_ts, last.close + 3, last.close + 4, last.low, last.close + 3, 1)
-    signal = find_ema_turn(breaking, 39, params)
+    rising = _steady_bars(40, start=100, step=0.5)
+    signal = find_ema_turn(rising, 39, params)
     assert signal is not None and signal.side == "buy"
-    assert breaking[39].close > signal.range_high
+    series = entry_series(rising, params)
+    for span in (params.ema_fast, params.ema_mid, params.ema_slow):
+        assert series.emas[span][39] > series.emas[span][38]
     assert signal.atr_ratio <= signal.threshold_ratio
-    assert signal.wick == breaking[39].low
-    assert find_ema_turn(breaking, 38, params) is None
+    assert signal.wick == rising[39].low
     assert stop_beyond_wick(signal.side, signal.wick, 0) == signal.wick
     assert stop_beyond_wick("buy", 98, 100) == pytest.approx(97.02)
     assert stop_beyond_wick("sell", 105, 100) == pytest.approx(106.05)
 
-    inside = list(quiet)
-    held = inside[39]
-    inside[39] = Candle(held.open_ts, held.close + 0.1, held.close + 0.5, held.low, held.close + 0.1, 1)
-    assert find_ema_turn(inside, 39, params) is None
+    stalled = list(rising)
+    stalled[39] = _replace_close(stalled[39], stalled[38].close - 5)
+    assert find_ema_turn(stalled, 39, params) is None
 
-    expanded = list(quiet)
-    prior = expanded[38]
-    expanded[38] = Candle(prior.open_ts, prior.open, prior.close + 30, prior.low, prior.close, 1)
-    assert low_atr_ratio(entry_series(expanded, params), 38, params) is None
-    assert find_ema_turn(expanded, 39, params) is None
+    wide = list(rising)
+    last = wide[39]
+    wide[39] = Candle(last.open_ts, last.open, last.close + 40, last.low, last.close, 1)
+    assert find_ema_turn(wide, 39, params) is None
 
-    falling = _steady_bars(40, start=120, step=-0.2, width=1.0)
-    assert find_ema_turn(falling, 39, params) is None
-    short_bars = list(falling)
-    anchor = short_bars[38]
-    short_bars[38] = Candle(anchor.open_ts, anchor.close, anchor.close + 0.05, anchor.close - 0.05, anchor.close, 1)
-    last = short_bars[39]
-    short_bars[39] = Candle(last.open_ts, last.close - 3, last.high, last.close - 4, last.close - 3, 1)
-    short = find_ema_turn(short_bars, 39, params)
+    flat = _steady_bars(40, start=100, step=0)
+    assert find_ema_turn(flat, 39, params) is None
+    reclaim = flat[:20] + [_hour4(date(2026, 6, 1), 0, 100, 110, 90, 105)]
+    assert find_ema_turn(reclaim, len(reclaim) - 1, params) is None
+
+    falling = _compressed_decline(40)
+    short = find_ema_turn(falling, 39, params)
     assert short is not None and short.side == "sell"
-    assert short_bars[39].close < short.range_low
-    assert short.wick == short_bars[39].high
+    assert short.wick == falling[39].high
     assert short.atr_ratio <= short.threshold_ratio
 
-    locked_bars = _steady_bars(40, start=100, step=0.2, width=1.0)
-    assert find_ema_turn(locked_bars, 39, evaluated_params()) is None
-    assert find_ema_turn(locked_bars, 33, evaluated_params()) is None
+    locked_bars = _steady_bars(40, start=100, step=0.5)
+    locked = find_ema_turn(locked_bars, 39, evaluated_params())
+    assert locked is not None and locked.side == "buy"
+    assert locked.atr_ratio <= locked.threshold_ratio
+    assert find_ema_turn(locked_bars, 31, evaluated_params()) is None
 
 
 def test_low_atr_threshold_is_the_30th_percentile():
@@ -241,10 +234,10 @@ def test_low_atr_threshold_is_the_30th_percentile():
     mild = list(quiet)
     last = mild[39]
     mild[39] = Candle(last.open_ts, last.close, last.close + 0.8, last.close - 0.5, last.close, 1)
-    assert low_atr_ratio(entry_series(mild, evaluated_params()), 39, evaluated_params()) is None
-    loose = SniperParams(atr_percentile=0.50)
-    state = low_atr_ratio(entry_series(mild, loose), 39, loose)
-    assert state is not None and state[0] <= state[1]
+    assert find_ema_turn(mild, 39, evaluated_params()) is None
+    at_median = find_ema_turn(mild, 39, SniperParams(atr_percentile=0.50))
+    assert at_median is not None and at_median.side == "buy"
+    assert at_median.atr_ratio <= at_median.threshold_ratio
 
 
 def test_full_notional_sizes_at_twenty_times_equity_and_three_account_r():
@@ -554,6 +547,23 @@ def _steady_bars(count: int, *, start: float, step: float, width: float = 1.0) -
     return bars
 
 
+def _compressed_decline(count: int) -> list[Candle]:
+    """前面波幅大，最后几根收窄，下跌时 ATR/收盘 才能落到 30 分位上。"""
+    opened = datetime(2026, 1, 1, tzinfo=UTC)
+    bars: list[Candle] = []
+    for index in range(count):
+        close = 200 - 0.2 * index
+        width = 8 if index < count - 5 else 0.2
+        bars.append(
+            Candle(opened + timedelta(hours=4 * index), close, close + width, close - width, close, 1)
+        )
+    return bars
+
+
+def _replace_close(bar: Candle, close: float) -> Candle:
+    return Candle(bar.open_ts, close, close + 1, close - 1, close, 1)
+
+
 def _weekday_slots() -> list[tuple[date, int]]:
     slots: list[tuple[date, int]] = []
     for day in (date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7)):
@@ -563,34 +573,20 @@ def _weekday_slots() -> list[tuple[date, int]]:
 
 
 def _long_path(signal: Candle, *after: Candle) -> list[Candle]:
-    """1 月 5–7 日窄幅上涨。每根收盘等于上一根最高价，不算走出。信号收盘高于这段高点。"""
+    """1 月 5–7 日上涨暖机。那几天宏观点数不够，门是关的，真正进场落在信号这根。"""
     bars: list[Candle] = []
     slots = _weekday_slots()
-    last_close = 100.0
-    step = 0.5
-    first = last_close - step * (len(slots) - 1)
     for index, (day, hour) in enumerate(slots):
-        close = first + step * index
-        bars.append(_hour4(day, hour, close, close + step, close - step, close))
+        close = signal.close - (len(slots) - index)
+        bars.append(_hour4(day, hour, close, close + 4, close - 4, close))
     return bars + [signal, *after]
 
 
 def _short_path(signal: Candle, *after: Candle) -> list[Candle]:
-    """窄幅下跌，最后一根再收得更窄，它才算压缩。信号收盘跌破这三根的最低价。"""
+    """下跌。前面的波幅比信号这根宽，ATR/收盘 才会落到 30 分位以下。"""
     bars: list[Candle] = []
     slots = _weekday_slots()
-    last_close = 99.0
-    step = 0.5
-    last = len(slots) - 1
     for index, (day, hour) in enumerate(slots):
-        close = last_close + step * (last - index)
-        if index == last - 2:
-            width = 2.0
-        elif index == last - 1:
-            width = 1.5
-        elif index == last:
-            width = 0.2
-        else:
-            width = 0.5
-        bars.append(_hour4(day, hour, close, close + width, close - width, close))
+        close = signal.close + (len(slots) - index)
+        bars.append(_hour4(day, hour, close, close + 20, close - 20, close))
     return bars + [signal, *after]

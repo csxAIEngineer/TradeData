@@ -25,7 +25,7 @@ def format_sniper_report(result: SniperResult, params: SniperParams | None = Non
     avg_price = sum(price_rs) / len(price_rs) if price_rs else 0.0
     count = len(result.trades)
     lines = [
-        "一击必杀 v0：宏观门只拦新开仓，日线定偏向，4H 先压缩，再等 EMA 同向并且收盘走出压缩区间。",
+        "一击必杀 v0：宏观门只拦新开仓，日线定偏向，4H 三条 EMA 同向转并且 ATR 处于低位才进场。",
         (
             f"MacroGate {params.macro_version}：DXY、10Y TIPS、HY OAS、VIX 等权。"
             f"因子不高于自己最近 {params.macro_lookback} 个收盘的中位数记 1，否则记 0。"
@@ -37,12 +37,10 @@ def format_sniper_report(result: SniperResult, params: SniperParams | None = Non
             f"{params.structure_days} 根日线的最高价，并且收盘在 EMA{params.ema_span} 之上。做空对称。没有偏向不做。"
         ),
         (
-            f"4H 做多：上一根 ATR{params.atr_length}/收盘不高于最近 {params.atr_percentile_window} 根"
-            f"（含那根）的 {params.atr_percentile * 100:.0f} 分位。"
-            f"压缩区间是这 {params.atr_percentile_window} 根的最高价和最低价，不含进场这根。"
-            f"进场这根 EMA{params.ema_fast}、EMA{params.ema_mid}、EMA{params.ema_slow} "
-            f"都高于自己 {params.ema_slope_bars} 根之前的值，并且收盘高于区间最高价。"
-            "止损在进场这根最低价之外。做空对称。"
+            f"4H 做多：EMA{params.ema_fast}、EMA{params.ema_mid}、EMA{params.ema_slow} "
+            f"都高于自己 {params.ema_slope_bars} 根之前的值，并且 ATR{params.atr_length}/收盘 "
+            f"不高于最近 {params.atr_percentile_window} 根（含本根）的 {params.atr_percentile * 100:.0f} 分位。"
+            "止损在这根最低价之外。做空对称。"
         ),
         (
             "全仓：数量 = 权益 × 杠杆 / 进场价。"
