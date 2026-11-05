@@ -1,10 +1,10 @@
-"""4H 多 EMA 转势，并且波动不高于自己近期的 30 分位。
+"""4H 先压缩，再等方向。压缩那根本身不开仓。
 
-做多：EMA6、EMA12、EMA32 每一条都严格高于 ``ema_slope_bars`` 根之前（默认就是上一根）。
-做空三条都严格更低。走平不算。不要求快线在慢线之上。
-ATR 用 Wilder。低波动看 ATR/收盘，不高于最近 ``atr_percentile_window`` 根（含本根）的
-``atr_percentile`` 分位，默认 0.30。
-止损在这根影线之外。缓冲为 0 时，做多止损是最低价，做空是最高价。
+压缩：上一根的 ATR/收盘不高于自己最近 ``atr_percentile_window`` 根（含那根）的
+``atr_percentile`` 分位，默认 0.30。压缩区间是这同一窗口的最高价和最低价，不含进场这根。
+方向：进场这根上 EMA6、EMA12、EMA32 都严格高于自己 ``ema_slope_bars`` 根之前（默认上一根），
+并且收盘高于压缩区间的最高价。做空三条都更低，收盘低于区间最低价。走平不算。
+不要求快线在慢线之上。止损在进场这根影线之外。缓冲为 0 时，做多止损是最低价，做空是最高价。
 """
 
 from __future__ import annotations
@@ -34,6 +34,8 @@ class EmaSignal:
     atr: float
     atr_ratio: float
     threshold_ratio: float
+    range_high: float
+    range_low: float
     wick: float
 
 
@@ -52,25 +54,12 @@ def entry_series(bars: Sequence[Candle], params: SniperParams) -> EntrySeries:
     return EntrySeries(spans=spans, emas=emas, atr=atr, ratios=ratios)
 
 
-def find_ema_turn(
-    bars: Sequence[Candle],
+def low_atr_ratio(
+    series: EntrySeries,
     index: int,
     params: SniperParams,
-    series: EntrySeries | None = None,
-) -> EmaSignal | None:
-    """这根 4H 三条 EMA 同向转，并且 ATR/收盘不高于自己的滚动分位。"""
-    if index < 0 or index >= len(bars):
-        return None
-    series = series or entry_series(bars, params)
-    lookback = params.ema_slope_bars
-    up = all(_slope(series.emas[span], index, lookback, up=True) for span in series.spans)
-    down = all(_slope(series.emas[span], index, lookback, up=False) for span in series.spans)
-    if up:
-        side: Side = "buy"
-    elif down:
-        side = "sell"
-    else:
-        return None
+) -> tuple[float, float] | None:
+    """这根是压缩根时，返回 ``(ATR/收盘, 分位阈值)``。不够窗口或高于分位就是 None。"""
     sample = _ratio_window(series.ratios, index, params.atr_percentile_window)
     if sample is None:
         return None
@@ -78,15 +67,51 @@ def find_ema_turn(
     threshold = inclusive_percentile(sample, params.atr_percentile)
     if current > threshold:
         return None
-    atr_now = series.atr[index]
-    if atr_now is None:
+    return current, threshold
+
+
+def find_ema_turn(
+    bars: Sequence[Candle],
+    index: int,
+    params: SniperParams,
+    series: EntrySeries | None = None,
+) -> EmaSignal | None:
+    """上一根已经压缩。这一根三条 EMA 同向转，并且收盘走出压缩区间。"""
+    if index < 1 or index >= len(bars):
         return None
+    series = series or entry_series(bars, params)
+    anchor = index - 1
+    compressed = low_atr_ratio(series, anchor, params)
+    if compressed is None:
+        return None
+    window = params.atr_percentile_window
+    start = anchor - window + 1
+    if start < 0:
+        return None
+    span = bars[start : anchor + 1]
+    range_high = max(bar.high for bar in span)
+    range_low = min(bar.low for bar in span)
+    lookback = params.ema_slope_bars
+    up = all(_slope(series.emas[span_len], index, lookback, up=True) for span_len in series.spans)
+    down = all(_slope(series.emas[span_len], index, lookback, up=False) for span_len in series.spans)
     bar = bars[index]
+    if up and bar.close > range_high:
+        side: Side = "buy"
+    elif down and bar.close < range_low:
+        side = "sell"
+    else:
+        return None
+    anchor_atr = series.atr[anchor]
+    if anchor_atr is None:
+        return None
+    ratio, threshold = compressed
     return EmaSignal(
         side=side,
-        atr=atr_now,
-        atr_ratio=current,
+        atr=anchor_atr,
+        atr_ratio=ratio,
         threshold_ratio=threshold,
+        range_high=range_high,
+        range_low=range_low,
         wick=bar.low if side == "buy" else bar.high,
     )
 
