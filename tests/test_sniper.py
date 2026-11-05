@@ -179,47 +179,33 @@ def test_each_liquidity_zone_retests_long_and_short_without_a_pierce():
     import dataprice.strategy.sniper.entry as entry
 
     assert not hasattr(entry, "find_sweep")
-    swing = _params(pivot_k=1)
-    long_swing = [
+    swing_only = [
         _hour4(date(2026, 1, 5), 0, 11, 12, 10, 11),
         _hour4(date(2026, 1, 5), 4, 9, 11, 8, 10),
         _hour4(date(2026, 1, 5), 8, 10, 12, 9, 11),
         _hour4(date(2026, 1, 5), 12, 12, 14, 9, 13),
     ]
-    bought = find_retest(long_swing, 3, swing)
-    assert bought is not None and bought.kind == "swing" and bought.side == "buy"
-    assert bought.zone_low == 8 and bought.zone_high == 11 and bought.wick == 9
-    assert stop_beyond_wick(bought.side, bought.wick, 0) == 9
-    assert stop_beyond_wick("buy", 98, 100) == pytest.approx(97.02)
-    pierced = list(long_swing)
-    pierced[3] = _hour4(date(2026, 1, 5), 12, 12, 14, 7, 13)
-    assert find_retest(pierced, 3, swing) is None
+    assert find_retest(swing_only, 3) is None
 
-    short_swing = [
-        _hour4(date(2026, 1, 5), 0, 10, 12, 9, 10),
-        _hour4(date(2026, 1, 5), 4, 12, 14, 11, 13),
-        _hour4(date(2026, 1, 5), 8, 11, 13, 10, 11),
-        _hour4(date(2026, 1, 5), 12, 10, 12, 8, 9),
-    ]
-    sold = find_retest(short_swing, 3, swing)
-    assert sold is not None and sold.kind == "swing" and sold.side == "sell"
-    assert sold.zone_low == 11 and sold.zone_high == 14 and sold.wick == 12
-
-    blocks = _params(pivot_k=2)
     long_block = [
         _hour4(date(2026, 1, 5), 0, 11, 12, 7, 8),
         _hour4(date(2026, 1, 5), 4, 12, 15, 12, 14),
         _hour4(date(2026, 1, 5), 8, 13, 14, 9, 13),
     ]
-    ob_long = find_retest(long_block, 2, blocks)
+    ob_long = find_retest(long_block, 2)
     assert ob_long is not None and ob_long.kind == "order_block" and ob_long.side == "buy"
-    assert ob_long.zone_low == 7 and ob_long.zone_high == 12
+    assert ob_long.zone_low == 7 and ob_long.zone_high == 12 and ob_long.wick == 9
+    assert stop_beyond_wick(ob_long.side, ob_long.wick, 0) == 9
+    assert stop_beyond_wick("buy", 98, 100) == pytest.approx(97.02)
+    pierced = list(long_block)
+    pierced[2] = _hour4(date(2026, 1, 5), 8, 13, 14, 6, 13)
+    assert find_retest(pierced, 2) is None
     short_block = [
         _hour4(date(2026, 1, 5), 0, 8, 12, 7, 11),
         _hour4(date(2026, 1, 5), 4, 10, 10, 6, 6),
         _hour4(date(2026, 1, 5), 8, 8, 9, 5, 5),
     ]
-    ob_short = find_retest(short_block, 2, blocks)
+    ob_short = find_retest(short_block, 2)
     assert ob_short is not None and ob_short.kind == "order_block" and ob_short.side == "sell"
     assert ob_short.zone_low == 7 and ob_short.zone_high == 12
 
@@ -229,7 +215,7 @@ def test_each_liquidity_zone_retests_long_and_short_without_a_pierce():
         _hour4(date(2026, 1, 5), 8, 14, 16, 12, 15),
         _hour4(date(2026, 1, 5), 12, 13, 15, 11, 14),
     ]
-    gap_long = find_retest(long_gap, 3, blocks)
+    gap_long = find_retest(long_gap, 3)
     assert gap_long is not None and gap_long.kind == "fvg" and gap_long.side == "buy"
     assert gap_long.zone_low == 10 and gap_long.zone_high == 12
     short_gap = [
@@ -238,7 +224,7 @@ def test_each_liquidity_zone_retests_long_and_short_without_a_pierce():
         _hour4(date(2026, 1, 5), 8, 10, 11, 8, 9),
         _hour4(date(2026, 1, 5), 12, 10, 12, 8, 9),
     ]
-    gap_short = find_retest(short_gap, 3, blocks)
+    gap_short = find_retest(short_gap, 3)
     assert gap_short is not None and gap_short.kind == "fvg" and gap_short.side == "sell"
     assert gap_short.zone_low == 11 and gap_short.zone_high == 14
 

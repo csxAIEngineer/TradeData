@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> None:
         "sniper-backtest",
         help="用 60m 合成 4H，跑一击必杀 v0",
         description=(
-            "一击必杀 v0。宏观门、日线偏向、4H 回踩摆动点、订单块或公允价值缺口。"
+            "一击必杀 v0。宏观门、日线偏向、4H 回踩订单块或公允价值缺口。"
             "参数锁在 sniper.evaluated_params()。命令行只覆盖手续费和滑点。"
         ),
     )

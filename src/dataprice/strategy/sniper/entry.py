@@ -1,8 +1,7 @@
-"""4H 回踩流动性区。不是刺破摆动极值再收回。
+"""4H 回踩订单块或公允价值缺口。摆动高低点不单独开仓。
 
-三种区都当支撑或压力：摆动点、订单块、公允价值缺口。
 做多：这根最低价落在支撑区里，但不破下沿，收盘回到区的上方。做空对称。
-止损在这根回踩影线之外。缓冲为 0 时，做多止损是最低价，做空是最高价。
+刺破远端再收回不算。止损在这根回踩影线之外。缓冲为 0 时，做多止损是最低价，做空是最高价。
 """
 
 from __future__ import annotations
@@ -12,10 +11,9 @@ from typing import Literal, Sequence
 
 from dataprice.contracts import Side
 from dataprice.strategy.candles import Candle
-from dataprice.strategy.sniper.params import SniperParams
 
-ZoneKind = Literal["swing", "order_block", "fvg"]
-_KIND_RANK = {"swing": 0, "order_block": 1, "fvg": 2}
+ZoneKind = Literal["order_block", "fvg"]
+_KIND_RANK = {"order_block": 0, "fvg": 1}
 
 
 @dataclass(frozen=True)
@@ -38,10 +36,9 @@ class Retest:
     wick: float
 
 
-def liquidity_zones(bars: Sequence[Candle], params: SniperParams) -> tuple[Zone, ...]:
-    """摆动点、订单块、公允价值缺口。形成之前的 K 线不能用。"""
-    zones = _swing_zones(bars, params.pivot_k)
-    zones.extend(_order_blocks(bars))
+def liquidity_zones(bars: Sequence[Candle]) -> tuple[Zone, ...]:
+    """订单块和公允价值缺口。摆动点只给日线偏向用，不在这里。"""
+    zones = _order_blocks(bars)
     zones.extend(_fvgs(bars))
     return tuple(zones)
 
@@ -49,17 +46,16 @@ def liquidity_zones(bars: Sequence[Candle], params: SniperParams) -> tuple[Zone,
 def find_retest(
     bars: Sequence[Candle],
     index: int,
-    params: SniperParams,
     zones: Sequence[Zone] | None = None,
 ) -> Retest | None:
     """这根第一次碰到某个还没被碰过的区，并且收盘站回有利的一侧。
 
     影线破了区的远端，不算回踩。同一根支撑和压力都成立，放弃。
-    同一侧有好几处，取形成得最晚的；形成时刻相同，先摆动点，再订单块，再缺口。
+    同一侧有好几处，取形成得最晚的；形成时刻相同，先订单块，再缺口。
     """
     if index < 1 or index >= len(bars):
         return None
-    zones = liquidity_zones(bars, params) if zones is None else zones
+    zones = liquidity_zones(bars) if zones is None else zones
     bar = bars[index]
     hits = [
         zone
@@ -95,20 +91,6 @@ def stop_beyond_wick(side: Side, wick: float, buffer_bps: float) -> float:
     if side == "buy":
         return wick * (1.0 - shift)
     return wick * (1.0 + shift)
-
-
-def _swing_zones(bars: Sequence[Candle], pivot_k: int) -> list[Zone]:
-    """摆动 K 线整根是区。右侧 ``pivot_k`` 根收完才算形成。"""
-    zones: list[Zone] = []
-    for index in range(pivot_k, len(bars) - pivot_k):
-        bar = bars[index]
-        left = bars[index - pivot_k : index]
-        right = bars[index + 1 : index + 1 + pivot_k]
-        if all(bar.low < item.low for item in left) and all(bar.low < item.low for item in right):
-            zones.append(Zone("swing", "buy", bar.low, bar.high, index + pivot_k))
-        if all(bar.high > item.high for item in left) and all(bar.high > item.high for item in right):
-            zones.append(Zone("swing", "sell", bar.low, bar.high, index + pivot_k))
-    return zones
 
 
 def _order_blocks(bars: Sequence[Candle]) -> list[Zone]:

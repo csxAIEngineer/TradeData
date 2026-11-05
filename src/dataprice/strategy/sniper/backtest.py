@@ -1,6 +1,6 @@
 """一击必杀 v0 的回测。判断本身不读库。
 
-同时只持有一笔。进场在信号那根 4H 的收盘：回踩摆动点、订单块或公允价值缺口，收盘站回有利的一侧。
+同时只持有一笔。进场在信号那根 4H 的收盘：回踩订单块或公允价值缺口，收盘站回有利的一侧。
 从下一根才看出场。同一根先碰到止损就按止损走，不再给目标。
 GATE=0 只是不开新仓，不平掉手里的单。偏向翻掉也不平。
 数据走到头还没打到止损或目标，按最后一根收盘记一笔 ``end``，这是回测收尾，不是规则出场。
@@ -81,7 +81,7 @@ def run_sniper(
     trades: list[SniperTrade] = []
     position: _Position | None = None
     skipped = 0
-    zones = liquidity_zones(bars_4h, params)
+    zones = liquidity_zones(bars_4h)
     for index, bar in enumerate(bars_4h):
         if position is not None:
             closed = _advance(position, bar, index, params)
@@ -217,7 +217,7 @@ def _try_open(
     bias = bias_for_session(biases, session)
     if bias is None or bias.bias == "flat":
         return None, 0
-    signal = find_retest(bars, index, params, zones)
+    signal = find_retest(bars, index, zones)
     if signal is None:
         return None, 0
     if signal.side == "buy" and bias.bias != "long":
