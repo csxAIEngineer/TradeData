@@ -1,10 +1,11 @@
-"""K 线和逐笔的字段检查。不连接 ClickHouse。"""
+"""K 线、逐笔和买卖一价的字段检查。不连接 ClickHouse。"""
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 
-from dataprice.contracts import BAR_FREQS, Bar, Tick, require_name
+from dataprice.contracts import BAR_FREQS, Bar, BookQuote, TakerFlow, Tick, require_name
 from dataprice.timeutil import ensure_aware
 
 
@@ -34,6 +35,37 @@ def validate_tick(tick: Tick) -> Tick:
     if tick.price <= 0 or tick.volume < 0:
         raise ValueError("price/volume 不合法")
     return tick
+
+
+def validate_quote(quote: BookQuote) -> BookQuote:
+    require_name(quote.symbol, "标的")
+    require_name(quote.source, "来源")
+    _aware(quote.exchange_ts, "exchange_ts")
+    _aware(quote.local_recv_ts, "local_recv_ts")
+    if not (math.isfinite(quote.bid) and math.isfinite(quote.ask)):
+        raise ValueError("bid/ask 必须是有限数")
+    if not (quote.ask >= quote.bid > 0):
+        raise ValueError("ask 必须大于等于 bid，且 bid 大于 0")
+    return quote
+
+
+def validate_taker_flow(row: TakerFlow) -> TakerFlow:
+    require_name(row.symbol, "标的")
+    require_name(row.source, "来源")
+    if row.freq not in BAR_FREQS:
+        raise ValueError(f"不支持的周期: {row.freq}")
+    _aware(row.exchange_ts, "exchange_ts")
+    _aware(row.local_recv_ts, "local_recv_ts")
+    for name, value in (
+        ("buy_volume", row.buy_volume),
+        ("sell_volume", row.sell_volume),
+        ("volume", row.volume),
+    ):
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{name} 必须是有限非负数")
+    if row.trade_count < 0:
+        raise ValueError("trade_count 不能为负")
+    return row
 
 
 def _aware(value: datetime, label: str) -> None:
