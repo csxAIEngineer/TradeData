@@ -9,4 +9,6 @@ dist/
 build/
 .env
 var/
+# sniper-chart 生成的 HTML，不入库
+*.sniper.html
 .DS_Store

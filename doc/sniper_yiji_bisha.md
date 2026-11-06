@@ -161,8 +161,11 @@ GATE=0 只挡住新开仓，不平掉已经持有的仓。
 ## 复现
 
 ```shell
-uv run pytest tests/test_sniper.py
+uv run pytest tests/test_sniper.py tests/test_sniper_chart.py
 uv run dataprice sniper-backtest --help
+uv run dataprice sniper-chart --help
 ```
+
+看图用 `dataprice sniper-chart`。它读的是同一次顺序单仓，不改这里的参数和出场规则。说明在 `doc/sniper_chart.md`。
 
 `tests/test_sniper.py` 不连接 ClickHouse。它核对门的 θ、周末沿用、t-1、日线不把当天收盘用进当天 4H、订单块和公允价值缺口各自的多空回踩、只有摆动点时不开仓、刺破远端再收回不做、止损在回踩影线、逐仓按保证金比例和杠杆定数量、账户 R 默认 3，以及 GATE=0 不平仓。仓库里没有一段可复现的 sniper 行情样本，历史净盈亏以本地 `sniper-backtest` 的输出为准。

@@ -60,6 +60,20 @@ class SniperResult:
     last_close: float
 
 
+@dataclass(frozen=True)
+class SniperView:
+    """同一次 ``run_sniper`` 的 4H、日线和顺序单仓。
+
+    ``macro`` / ``gates`` 就是送进这次回测的那一份。图表只读这个对象，不再跑一遍独立信号。
+    """
+
+    bars_4h: tuple[Candle, ...]
+    daily: tuple[Candle, ...]
+    result: SniperResult
+    macro: MacroBook | None = None
+    gates: dict[date, EffectiveGate] | None = None
+
+
 def run_sniper(
     bars_4h: Sequence[Candle],
     daily: Sequence[Candle],
@@ -118,19 +132,47 @@ def run_sniper_intraday(
     trade_start: datetime | None = None,
 ) -> SniperResult:
     """从 30 分钟或 60 分钟合成 4H 和 UTC 日线，再跑 v0。"""
+    return sniper_intraday_view(
+        candles,
+        params,
+        bar_minutes=bar_minutes,
+        macro=macro,
+        gates=gates,
+        trade_start=trade_start,
+    ).result
+
+
+def sniper_intraday_view(
+    candles: Sequence[Candle],
+    params: SniperParams | None = None,
+    *,
+    bar_minutes: int,
+    macro: MacroBook | None = None,
+    gates: Mapping[date, EffectiveGate] | None = None,
+    trade_start: datetime | None = None,
+) -> SniperView:
+    """和 ``run_sniper_intraday`` 同一次合成、同一笔 ``run_sniper``。"""
     if bar_minutes not in (30, 60):
         raise ValueError("一击必杀只从 30m 或 60m 合成 4H")
-    bars_4h = to_4h(candles, bar_minutes=bar_minutes)
-    daily = to_daily(candles, bar_minutes=bar_minutes)
+    bars_4h = tuple(to_4h(candles, bar_minutes=bar_minutes))
+    daily = tuple(to_daily(candles, bar_minutes=bar_minutes))
     if not bars_4h:
         raise ValueError("这些 K 线合成不出完整的 4H")
-    return run_sniper(
+    result = run_sniper(
         bars_4h,
         daily,
         params,
         macro=macro,
         gates=gates,
         trade_start=trade_start,
+    )
+    saved = dict(gates) if gates is not None else None
+    return SniperView(
+        bars_4h=bars_4h,
+        daily=daily,
+        result=result,
+        macro=macro,
+        gates=saved,
     )
 
 
@@ -143,6 +185,24 @@ def run_stored_sniper(
     settings: Settings | None = None,
 ) -> SniperResult:
     """从 ClickHouse 读 60 分钟和宏观日频。K 线多取 120 天，宏观多取 400 天，交易仍从 ``start`` 起。"""
+    return load_stored_sniper_view(
+        symbol=symbol,
+        start=start,
+        end=end,
+        params=params,
+        settings=settings,
+    ).result
+
+
+def load_stored_sniper_view(
+    *,
+    symbol: str = "BTC-USDT",
+    start: datetime,
+    end: datetime,
+    params: SniperParams | None = None,
+    settings: Settings | None = None,
+) -> SniperView:
+    """从 ClickHouse 读数，再交给 ``sniper_intraday_view``。成交和 ``run_stored_sniper`` 是同一次结果。"""
     from datetime import timedelta
 
     from dataprice.market.repo import market_session
@@ -181,7 +241,7 @@ def run_stored_sniper(
             f"ClickHouse 里没有 {symbol} 60m。先执行: "
             f"uv run dataprice backfill --symbol {symbol} --freq 60m"
         )
-    return run_sniper_intraday(
+    return sniper_intraday_view(
         candles,
         params,
         bar_minutes=60,

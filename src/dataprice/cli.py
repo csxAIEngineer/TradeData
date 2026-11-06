@@ -62,6 +62,40 @@ def main(argv: list[str] | None = None) -> None:
     sniper.add_argument("--months", type=int, default=24, help="回测窗口，大约 30 天算一个月")
     sniper.add_argument("--fee-bps", type=float, default=5.0, help="每边手续费，基点。默认 5")
     sniper.add_argument("--slippage-bps", type=float, default=2.0, help="每边不利滑点，基点。默认 2")
+    chart = sub.add_parser(
+        "sniper-chart",
+        help="把一击必杀的 4H / 日线和顺序单仓画成 HTML",
+        description=(
+            "用与 sniper-backtest 相同的顺序单仓画 4H K 线和 UTC 日线偏向。"
+            "不另跑独立信号。策略参数仍锁在 sniper.evaluated_params()，命令行只覆盖手续费和滑点。"
+        ),
+    )
+    chart.add_argument("--symbol", default="BTC-USDT")
+    window = chart.add_mutually_exclusive_group()
+    window.add_argument(
+        "--months",
+        type=int,
+        default=None,
+        help="回测窗口，大约 30 天算一个月。默认 24。和 --start 二选一",
+    )
+    window.add_argument(
+        "--start",
+        help="UTC 起始，包含该时刻。YYYY-MM-DD 或 ISO 时间。给出后不用 --months",
+    )
+    chart.add_argument("--end", help="UTC 结束，不包含该时刻。默认现在")
+    chart.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="只画时间窗内最近的 N 根 4H。这些入场的出场若更晚，会把 K 线补到出场，补上的部分不再增加入场",
+    )
+    chart.add_argument(
+        "--output",
+        required=True,
+        help="HTML 路径。不要写进仓库，例如 /tmp/btc.sniper.html",
+    )
+    chart.add_argument("--fee-bps", type=float, default=5.0, help="每边手续费，基点。默认 5")
+    chart.add_argument("--slippage-bps", type=float, default=2.0, help="每边不利滑点，基点。默认 2")
     macro = sub.add_parser(
         "macro-backfill",
         help="写入 DXY、10Y TIPS、HY OAS、VIX，并合成 factor_macro_gate v0.1",
@@ -205,6 +239,49 @@ def main(argv: list[str] | None = None) -> None:
             parser.error(str(exc))
         for line in format_sniper_report(sniper_result, sniper_params).splitlines():
             logging.info("%s", line)
+    elif args.command == "sniper-chart":
+        from dataclasses import replace
+        from datetime import datetime
+
+        from dataprice.strategy.sniper.chart import (
+            parse_chart_time,
+            resolve_chart_window,
+            write_sniper_chart_from_store,
+        )
+        from dataprice.strategy.sniper.params import evaluated_params as sniper_evaluated_params
+        from dataprice.timeutil import UTC
+
+        if args.limit is not None and args.limit < 1:
+            parser.error("limit 至少为 1")
+        now = datetime.now(UTC)
+        try:
+            start_at = parse_chart_time(args.start) if args.start else None
+            end_at = parse_chart_time(args.end) if args.end else None
+            start_at, end_at = resolve_chart_window(
+                months=args.months,
+                start=start_at,
+                end=end_at,
+                now=now,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        chart_params = replace(
+            sniper_evaluated_params(),
+            fee_bps=args.fee_bps,
+            slippage_bps=args.slippage_bps,
+        )
+        try:
+            chart_path = write_sniper_chart_from_store(
+                symbol=args.symbol,
+                start=start_at,
+                end=end_at,
+                output=args.output,
+                limit=args.limit,
+                params=chart_params,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            parser.error(str(exc))
+        logging.info("图表已写入 %s", chart_path)
     elif args.command == "macro-backfill":
         from dataprice.strategy.sniper.fetch import fetch_macro_book
         from dataprice.strategy.sniper.macro_gate import parse_macro_csv
