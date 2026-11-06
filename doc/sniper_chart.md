@@ -33,3 +33,27 @@ HTML 写到仓库外面，例如 `/tmp/btc.sniper.html`。`*.sniper.html` 已在
 | L0 GATE=0 阴影 | 送进这次回测的宏观序列或 `factor_macro_gate` | 两个都没有就不画，图例说明 |
 
 灰色竖带表示该 UTC 日是 GATE=0，或者没有生效门。这和回测一样：关门只是不开新仓，不平掉已有的单。
+
+## 本机页面
+
+`dataprice sniper-web` 用同一套图表逻辑在浏览器里跑。默认只听本机，不开启 debug，也不自动重载。
+
+```shell
+uv run dataprice sniper-web --host 127.0.0.1 --port 8765 --output-dir var/sniper-web
+```
+
+打开 http://127.0.0.1:8765/ 。首页可以填品种（默认 BTC-USDT）、月数（默认 24）、最近 4H 根数（默认 400），以及可选的 UTC 起始和结束。填了起始时间就按起始和结束跑，月数不再参与。提交后页面会等到这次顺序单仓画完，再显示图。
+
+每次运行单独放一个目录。服务重启后，首页历史仍能打开旧图，也能下载 HTML、CSV 和 JSON。文件只按运行编号提供，不能用路径读输出目录以外的内容。
+
+```text
+var/sniper-web/
+  20261106T030512Z-<32位十六进制>/
+    chart.html     图，plotly.js 嵌在里面
+    trades.json    这次顺序单仓的 SniperTrade
+    trades.csv     同一组成交
+    params.json    品种、时间窗、limit、费用和运行编号
+    summary.json   笔数、净盈亏、出场原因和文字汇总
+```
+
+这里不保存原始 K 线全集，也不写登录、账号或数据库。`var/` 已在 `.gitignore` 里。

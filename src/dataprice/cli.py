@@ -96,6 +96,21 @@ def main(argv: list[str] | None = None) -> None:
     )
     chart.add_argument("--fee-bps", type=float, default=5.0, help="每边手续费，基点。默认 5")
     chart.add_argument("--slippage-bps", type=float, default=2.0, help="每边不利滑点，基点。默认 2")
+    web = sub.add_parser(
+        "sniper-web",
+        help="在本机打开一击必杀图表页面",
+        description=(
+            "本机网页跑与 sniper-chart 相同的顺序单仓，并把每次结果写到输出目录。"
+            "默认只监听 127.0.0.1。不开启 debug，也不自动重载。"
+        ),
+    )
+    web.add_argument("--host", default="127.0.0.1", help="默认 127.0.0.1")
+    web.add_argument("--port", type=int, default=8765, help="默认 8765")
+    web.add_argument(
+        "--output-dir",
+        default="var/sniper-web",
+        help="运行结果目录。默认 var/sniper-web，已在 .gitignore 的 var/ 里",
+    )
     macro = sub.add_parser(
         "macro-backfill",
         help="写入 DXY、10Y TIPS、HY OAS、VIX，并合成 factor_macro_gate v0.1",
@@ -282,6 +297,16 @@ def main(argv: list[str] | None = None) -> None:
         except (OSError, RuntimeError, ValueError) as exc:
             parser.error(str(exc))
         logging.info("图表已写入 %s", chart_path)
+    elif args.command == "sniper-web":
+        from pathlib import Path
+
+        from dataprice.strategy.sniper.web import serve_sniper_web
+
+        if not str(args.host).strip():
+            parser.error("host 不能为空")
+        if args.port < 1 or args.port > 65535:
+            parser.error("port 必须在 1 到 65535")
+        serve_sniper_web(host=args.host, port=args.port, output_dir=Path(args.output_dir))
     elif args.command == "macro-backfill":
         from dataprice.strategy.sniper.fetch import fetch_macro_book
         from dataprice.strategy.sniper.macro_gate import parse_macro_csv

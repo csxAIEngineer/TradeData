@@ -49,6 +49,7 @@ make test
 | `make backtest` | 用已入库 K 线跑 TPO + 当日 VWAP |
 | `make sniper-backtest` | 用 60m 和宏观门跑一击必杀 |
 | `make sniper-chart` | 提示如何把同一笔顺序单仓画成 HTML |
+| `make sniper-web` | 本机打开图表页面，结果写到 `var/sniper-web` |
 | `make down` | 停止容器，数据卷保留 |
 
 一击必杀要先有 60 分钟 K 线，再有宏观日频：
@@ -61,6 +62,14 @@ uv run dataprice sniper-chart --symbol BTC-USDT --months 24 --limit 400 --output
 ```
 
 `sniper-chart` 用同一次顺序单仓画 4H K 线和日线偏向。时间窗、`--limit` 和 HTML 路径可以改。策略参数不能从这条命令改。生成的 HTML 不要提交。用法在 `doc/sniper_chart.md`。
+
+本机页面：
+
+```shell
+uv run dataprice sniper-web
+```
+
+浏览器打开 http://127.0.0.1:8765/ 。每次结果写到 `var/sniper-web/<运行编号>/`，里面是 `chart.html`、`trades.json`、`trades.csv`、`params.json` 和 `summary.json`。
 
 宏观 CSV 三列：`series_id,obs_date,close`。序列名是 `dxy`、`tips_10y`、`hy_oas`、`vix`，日期是工作日。本机能访问 FRED 和 Yahoo 时可以 `uv run dataprice macro-backfill --fetch`。10Y TIPS 是 FRED `DFII10`，HY OAS 是 FRED `BAMLH0A0HYM2`，DXY 是 Yahoo `DX-Y.NYB`，VIX 是 Yahoo `^VIX`。拉不到就改 CSV。
 

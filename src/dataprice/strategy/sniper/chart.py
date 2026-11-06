@@ -247,10 +247,8 @@ def build_sniper_figure(
     return figure, notes
 
 
-def write_sniper_html(figure: go.Figure, notes: ChartNotes, output: Path | str) -> Path:
-    """写出不依赖服务器的 HTML。plotly.js 嵌在文件里。"""
-    path = Path(output)
-    path.parent.mkdir(parents=True, exist_ok=True)
+def render_sniper_html(figure: go.Figure, notes: ChartNotes) -> str:
+    """独立 HTML。plotly.js 嵌在页面里，打开时不需要服务。"""
     page = figure.to_html(
         full_html=True,
         include_plotlyjs=True,
@@ -267,10 +265,15 @@ def write_sniper_html(figure: go.Figure, notes: ChartNotes, output: Path | str) 
         f"{html.escape(notes.text)}</section>"
     )
     if "<body>" in page:
-        page = page.replace("<body>", "<body>\n" + block, 1)
-    else:
-        page = block + page
-    path.write_text(page, encoding="utf-8")
+        return page.replace("<body>", "<body>\n" + block, 1)
+    return block + page
+
+
+def write_sniper_html(figure: go.Figure, notes: ChartNotes, output: Path | str) -> Path:
+    """写出不依赖服务器的 HTML。plotly.js 嵌在文件里。"""
+    path = Path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_sniper_html(figure, notes), encoding="utf-8")
     return path
 
 
